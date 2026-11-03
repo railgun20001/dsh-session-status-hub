@@ -16,6 +16,37 @@ A missing "how are all my Sessions doing right now?" surface for [DeepSeek Harne
   at* finishes in the background (the stock UI marks nothing for the main view; this
   plugin fills that gap).
 
+## At a glance (Q&A)
+
+> This section is also the copy of the README hero image; the screenshot lives at
+> [`docs/images/intro-qa.png`](docs/images/intro-qa.png).
+
+**Q: I have a dozen Sessions open — how do I tell at a glance which one failed and which one
+is waiting for my answer?**
+
+**A: install `dsh-session-status-hub`.** It does three things:
+
+1. **A rail in the title bar**, ordered
+   `red (failed) > yellow (waiting for you) > green (unread) > blue (running)`. The 3 chips
+   shown by default are always the 3 that need you most; one click jumps to that Session.
+2. **A taskbar status dot** via `ITaskbarList3.SetOverlayIcon` — red / yellow / green on the
+   DSH taskbar button, still visible while the window is minimized or buried behind other
+   apps.
+3. **Windows notifications** when a Session finishes / fails / needs your answer — colour
+   emoji in the title, click to reopen the Session and raise the window.
+
+What it deliberately does *not* do:
+
+- no notifications for streaming activity ("thinking…", "running a tool…") — only real state
+  changes;
+- **running never lights the taskbar**: a permanently green dot would mask the red / yellow
+  signal;
+- it fills the stock gap where the conversation you are *looking at* finishes in the
+  background (the stock UI marks nothing) — the plugin records it itself and shows green;
+- **zero npm dependencies**; the host half hot-loads, the client half needs one `Ctrl+R`.
+
+![dsh-session-status-hub Q&A intro screenshot](docs/images/intro-qa.png)
+
 > Full, behaviour-level documentation (state machine, notification edge engine, the measured
 > Windows toast `tag` limit, taskbar worker internals, every known boundary) is in the
 > Chinese doc: **[README.zh-CN.md](README.zh-CN.md)**.
