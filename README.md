@@ -18,8 +18,8 @@ A missing "how are all my Sessions doing right now?" surface for [DeepSeek Harne
 
 ## At a glance (Q&A)
 
-> This section is also the copy of the README hero image; the screenshot lives at
-> [`docs/images/intro-qa.png`](docs/images/intro-qa.png).
+> The figure below is a real screenshot of the rail: a yellow "waiting for you" chip and a
+> blue "running" chip — one click jumps to that Session.
 
 **Q: I have a dozen Sessions open — how do I tell at a glance which one failed and which one
 is waiting for my answer?**
@@ -45,7 +45,7 @@ What it deliberately does *not* do:
   background (the stock UI marks nothing) — the plugin records it itself and shows green;
 - **zero npm dependencies**; the host half hot-loads, the client half needs one `Ctrl+R`.
 
-![dsh-session-status-hub Q&A intro screenshot](docs/images/intro-qa.png)
+![dsh-session-status-hub title-bar rail: waiting (yellow) / running (blue)](docs/images/status-rail.png)
 
 > Full, behaviour-level documentation (state machine, notification edge engine, the measured
 > Windows toast `tag` limit, taskbar worker internals, every known boundary) is in the

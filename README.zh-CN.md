@@ -15,8 +15,7 @@
 
 ## 快速了解（问答）
 
-> 本节同时是 README 首图的文案，截图放在
-> [`docs/images/intro-qa.png`](docs/images/intro-qa.png)。
+> 下方配图是标题栏状态栏的实拍：黄色「等待回答」、蓝色「运行中」，点一下即跳转。
 
 **Q：同时开了十几个对话，怎么一眼看出哪个在报错、哪个在等我回答？**
 
@@ -36,7 +35,7 @@
 - 补齐原生缺口：**你正看着的对话切到后台跑完**时原生什么都不标，插件自己记下来并亮绿灯；
 - **零 npm 依赖**，宿主端热加载，前端 `Ctrl+R` 一次即可。
 
-![dsh-session-status-hub 介绍问答截图](docs/images/intro-qa.png)
+![dsh-session-status-hub 标题栏状态栏：等待回答（黄）/ 运行中（蓝）](docs/images/status-rail.png)
 
 ---
 
