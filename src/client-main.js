@@ -9,6 +9,7 @@
  *   tick()  ──▶ planNotifications（notify-core）──▶ 通知 + 回合完成边沿
  *        │                                        └─▶ hub-stores 记「后台完成」
  *        ├──▶ deriveHubRows（hub-model）──────▶ 状态栏行 ──▶ hub-host 上报任务栏
+ *        ├──▶ 草稿扫描（hub-drafts）──────────▶ 「未开始」灰点
  *        └──▶ 诊断快照（__DSH_SESSION_HUB__）
  *
  * 具体实现分别住在：
@@ -24,6 +25,7 @@
  * | 状态栏与行悬停组件 | hub-ui.js |
  * | 插槽注册 | hub-slots.js |
  * | 状态与优先级模型 | hub-model.js |
+ * | 未发送草稿的读取 | hub-drafts.js |
  * | 通知边沿引擎 | notify-core.js |
  * | 侧栏滚动 | hub-scroll.js |
  *
@@ -41,6 +43,18 @@ const TICK_COALESCE_MS = 30
 
 /** 水位 / 确认表落盘的合并窗口（毫秒）。 */
 const PERSIST_COALESCE_MS = 400
+
+/**
+ * 草稿扫描的兜底轮询间隔（毫秒）。
+ *
+ * 草稿写进 `localStorage` 不会触发同页面的 `storage` 事件；输入框打字时另有
+ * `input` / `compositionend` 监听做即时扫描，这个轮询只负责兜住「程序化写入、
+ * 会话切换、其他标签页写入」等没有输入事件的路径，所以 2 秒足够。
+ */
+const DRAFT_POLL_MS = 2000
+
+/** 输入事件触发的草稿扫描合并窗口（毫秒）：连续敲字只读一次存储。 */
+const DRAFT_INPUT_SCAN_MS = 200
 
 /**
  * 窗口是否处于「用户就在看」的状态。
@@ -156,9 +170,17 @@ function apply(ctx) {
   /** 生效中的配置（对象被就地更新，读取请走这里）。 */
   const config = stores.config
   const { acks, localUnread } = stores
+  /**
+   * 「未开始」草稿表：`{ [sessionId]: { chars } }`。
+   *
+   * 只放「这个会话有没有非空草稿」的元数据，不含正文（见 hub-drafts 的隐私边界）。
+   * 由 `syncDraftsFromList` 从 `dsh.conversation.<id>` 扫描得到，React 侧订阅这个快照。
+   */
+  const drafts = createSnapshotStore({})
 
   let tickTimer = null
   let persistTimer = null
+  let draftInputTimer = null
   let disposed = false
   /** 最近一次推导出的状态栏行（诊断与任务栏聚合用）。 */
   let lastRows = []
@@ -269,6 +291,50 @@ function apply(ctx) {
     onFirstShow: () => host.callHostRoute('warmup'),
   })
 
+  /**
+   * 取当前环境的 localStorage；隐私模式 / 非浏览器环境下访问本身就可能抛错。
+   * @returns {Storage|null} 存储对象或 null。
+   */
+  const draftStorage = () => {
+    try {
+      return typeof localStorage === 'undefined' ? null : localStorage
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * 从会话列表快照同步草稿表。
+   *
+   * 只扫描列表里真实存在的会话（空白占位行与子代理会话即使有草稿也不进状态栏，
+   * 模型层还会再过滤一次）。内容没变时不发布新快照，避免无谓的 React 重渲染。
+   * @param {object} listState 会话列表快照。
+   * @returns {boolean} 草稿表是否发生了变化。
+   */
+  const syncDraftsFromList = (listState) => {
+    const byId = listState?.byId
+    const sessionIds = byId !== null && typeof byId === 'object' ? Object.keys(byId) : []
+    const previous = drafts.getSnapshot()
+    const next = scanSessionDrafts(draftStorage(), sessionIds, previous)
+    if (sameDraftMap(previous, next)) return false
+    drafts.set(next)
+    return true
+  }
+
+  /** 重新读一遍草稿（输入事件 / 轮询 / 焦点变化时调用）。 */
+  const refreshDrafts = () => {
+    try {
+      const listState = safeGet('sessions')?.list?.getSnapshot?.()
+      if (listState === undefined || listState === null) return
+      // 状态栏直接订阅 drafts 快照会立即重渲染；这里再排一次观察是为了让诊断行
+      // （getRows）与任务栏聚合在同一帧跟上，且不会形成环（内容不变时返回 false）。
+      if (syncDraftsFromList(listState)) scheduleTick()
+    } catch (error) {
+      // 草稿是锦上添花：读失败只记日志，绝不影响既有四类状态。
+      console.warn(`[${PLUGIN_ID}] 读取会话草稿失败`, error)
+    }
+  }
+
   /** 立即观察一次（合并窗口到期时执行）。 */
   const tick = () => {
     tickTimer = null
@@ -280,6 +346,9 @@ function apply(ctx) {
 
       const listState = sessionsService.list?.getSnapshot?.()
       if (listState === undefined || listState === null) return
+      // 会话列表变化（新会话 / 归档 / 标题）可能同时改变要扫描的草稿键集合；
+      // 在推导行之前同步，保证这一帧的「未开始」与列表一致。
+      syncDraftsFromList(listState)
       const statusSnapshot = uiSession.sessionStatus?.getSnapshot?.()
       const statuses = projectStatuses(statusSnapshot)
       // 状态快照没拿到时不能据此判断「待交互已经消失」，否则会把还在等你的通知误撤掉。
@@ -328,6 +397,7 @@ function apply(ctx) {
         statuses,
         ackErrors: acks.getSnapshot(),
         localUnread: localUnread.getSnapshot(),
+        drafts: drafts.getSnapshot(),
       })
       let rows = derive()
       if (currentSessionId !== undefined && focused) {
@@ -431,7 +501,11 @@ function apply(ctx) {
   // 「后台完成」的记账靠焦点状态判定，而焦点变化**不会**带来会话状态推送：用户切回窗口
   // 那一刻必须自己重新观察一次，否则绿点 / 绿灯会一直亮到下一次会话状态变化为止。
   const focusListeners = []
-  const onWindowFocusChange = () => scheduleTick()
+  const onWindowFocusChange = () => {
+    scheduleTick()
+    // 回到窗口 / 页面重新可见时补一次草稿扫描：隐藏期间轮询是停的。
+    refreshDrafts()
+  }
   try {
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
       window.addEventListener('focus', onWindowFocusChange)
@@ -446,11 +520,63 @@ function apply(ctx) {
     console.warn(`[${PLUGIN_ID}] 订阅窗口焦点失败`, error)
   }
 
+  // ---- 草稿：输入事件即时扫、storage 事件跨标签页扫、2 秒轮询兜底 ----
+  //
+  // `ui-conversation` 把草稿写进 localStorage，但同页面写入不会触发 `storage` 事件；
+  // 所以打字走 `input` / `compositionend`，另外两条路径负责「程序化写入」与其他窗口。
+  // 轮询命中隐藏页面时直接跳过，避免后台空转。
+  const draftListeners = []
+  const onDraftInput = () => {
+    if (disposed || draftInputTimer !== null) return
+    draftInputTimer = setTimeout(() => {
+      draftInputTimer = null
+      refreshDrafts()
+    }, DRAFT_INPUT_SCAN_MS)
+  }
+  const onDraftStorage = (event) => {
+    const key = event?.key
+    if (typeof key === 'string' && !key.startsWith(`${CONVERSATION_STORE_KEY}.`)) return
+    refreshDrafts()
+  }
+  try {
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      document.addEventListener('input', onDraftInput, true)
+      document.addEventListener('compositionend', onDraftInput, true)
+      draftListeners.push(
+        { target: document, type: 'input', handler: onDraftInput, capture: true },
+        { target: document, type: 'compositionend', handler: onDraftInput, capture: true },
+      )
+    }
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('storage', onDraftStorage)
+      draftListeners.push({ target: window, type: 'storage', handler: onDraftStorage })
+    }
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 订阅草稿变化失败`, error)
+  }
+
+  let draftPollTimer = null
+  try {
+    if (typeof setInterval === 'function') {
+      draftPollTimer = setInterval(() => {
+        if (disposed) return
+        try {
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+        } catch {
+          /* 忽略：读不到可见性就照常扫描 */
+        }
+        refreshDrafts()
+      }, DRAFT_POLL_MS)
+    }
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 启动草稿轮询失败`, error)
+  }
+
   // ---- 工作区顶部状态栏 / 顶栏变体 / 行悬停提示 ----
   registerHubSlots({
     ctx,
     pluginId: PLUGIN_ID,
-    deps: { openSession, ackError, acks, localUnread },
+    deps: { openSession, ackError, acks, localUnread, drafts },
   })
 
   /** 页面卸载时清掉任务栏状态点，避免红灯留在任务栏上。 */
@@ -476,8 +602,12 @@ function apply(ctx) {
     }
     if (tickTimer !== null) clearTimeout(tickTimer)
     if (persistTimer !== null) clearTimeout(persistTimer)
+    if (draftInputTimer !== null) clearTimeout(draftInputTimer)
+    if (draftPollTimer !== null) clearInterval(draftPollTimer)
     tickTimer = null
     persistTimer = null
+    draftInputTimer = null
+    draftPollTimer = null
     stores.watermarks.flush()
     try {
       cancelPermissionWait()
@@ -487,6 +617,13 @@ function apply(ctx) {
     for (const { target, type } of focusListeners.splice(0)) {
       try {
         target.removeEventListener?.(type, onWindowFocusChange)
+      } catch {
+        /* 忽略 */
+      }
+    }
+    for (const { target, type, handler, capture } of draftListeners.splice(0)) {
+      try {
+        target.removeEventListener?.(type, handler, capture)
       } catch {
         /* 忽略 */
       }
@@ -503,7 +640,9 @@ function apply(ctx) {
     }
   }, `${PLUGIN_ID}: observers`)
 
-  // 首帧先做一次基线观察：已有的历史结局不会变成一串迟到的通知。
+  // 首帧先做一次基线观察：已有的历史结局不会变成一串迟到的通知；
+  // 同时把页面重开后仍然存在的草稿读进来，让「未开始」立即出现。
+  refreshDrafts()
   scheduleTick()
 
   // ---- 诊断/测试入口 ----
@@ -522,6 +661,14 @@ function apply(ctx) {
     },
     /** @returns {object} 当前水位表（只读快照）。 */
     getWatermarks: () => JSON.parse(JSON.stringify(stores.watermarks.get())),
+    /**
+     * 有未发送草稿的会话（排障用）。
+     *
+     * 形状 `{ [sessionId]: { chars } }`：只有字符数，没有正文。想手动刷新可先改
+     * `localStorage["dsh.conversation.<id>"]`，再调用 `__DSH_SESSION_HUB__.tick()`。
+     * @returns {object} 草稿表快照。
+     */
+    getDrafts: () => ({ ...drafts.getSnapshot() }),
     /** @returns {Array<object>} 当前状态栏行。 */
     getRows: () => JSON.parse(JSON.stringify(lastRows)),
     /** @returns {string} 当前聚合任务栏状态。 */
@@ -593,6 +740,8 @@ function apply(ctx) {
       taskbarState: aggregateTaskbarState(lastRows),
       /** 「后台完成、尚未查看」的会话数（补官方 completionUnread 的那部分）。 */
       localUnread: Object.keys(localUnread.getSnapshot()).length,
+      /** 状态栏里正在以「未开始」显示的会话数（空白 / 子代理已由模型层过滤）。 */
+      draftSessions: lastRows.filter((row) => row.state === 'draft').length,
       /** 窗口此刻是否在前台（与通知静默、待查看记账同源）。 */
       focused: isFocused(config),
       desktopShell: isDesktopShell(),

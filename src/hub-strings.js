@@ -5,8 +5,8 @@
  * 之前同一个字符串存在三处（locale 注册一份、两个组件的 FALLBACK 各一份），加一条文案
  * 要改三个地方，漏一处就会在界面上直接显示出 key 名（例如 `state.unread`）。
  *
- * 只放「可见文案」：状态的内部取值（`error` / `answer` / `running` / `unread`）与颜色
- * 优先级属于模型层（见 hub-model.js 的 STATE_ORDER），不要混进来。
+ * 只放「可见文案」：状态的内部取值（`error` / `answer` / `running` / `unread` / `draft`）
+ * 与颜色优先级属于模型层（见 hub-model.js 的 STATE_ORDER），不要混进来。
  *
  * 键的命名约定：
  *   - `label` / `idle` / `aria` / `more` / `collapse`：状态栏容器自身
@@ -32,6 +32,7 @@ export const HUB_STRINGS = Object.freeze({
     more: '还有 {count} 个会话',
     collapse: '收起',
     'state.answer': '等待回答',
+    'state.draft': '未开始',
     'state.error': '报错',
     'state.running': '运行中',
     'state.unread': '待查看',
@@ -46,6 +47,7 @@ export const HUB_STRINGS = Object.freeze({
     more: '{count} more Sessions',
     collapse: 'Collapse',
     'state.answer': 'Waiting',
+    'state.draft': 'Not started',
     'state.error': 'Failed',
     'state.running': 'Running',
     'state.unread': 'Unread',

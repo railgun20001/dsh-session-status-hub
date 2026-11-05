@@ -11,6 +11,7 @@ import {
   currentSessionIdOf,
   deriveHubRows,
   failureKindOf,
+  hasDraftContent,
   hasLocalUnread,
   isUnackedFailure,
   normalizeAckErrors,
@@ -78,7 +79,7 @@ test('四类状态都能推导出来', () => {
   ])
 })
 
-test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）', () => {
+test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 灰（未开始）> 蓝（运行中）', () => {
   const list = listOf([
     row('running', { running: true, updatedAt: 400 }),
     row('unread', { updatedAt: 300 }),
@@ -93,7 +94,50 @@ test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）>
   assert.deepEqual(deriveHubRows({ list, statuses }).map((item) => item.id), [
     'error', 'answer', 'unread', 'running',
   ])
-  assert.deepEqual(STATE_ORDER, { error: 0, answer: 1, unread: 2, running: 3 })
+  assert.deepEqual(STATE_ORDER, { error: 0, answer: 1, unread: 2, draft: 3, running: 4 })
+})
+
+test('未发送草稿归为「未开始」，显示在待查看之后、运行中之前', () => {
+  const list = listOf([
+    row('draft', { updatedAt: 100 }),
+    row('running', { running: true, updatedAt: 400 }),
+    row('unread', { updatedAt: 300 }),
+    row('answer', { updatedAt: 200 }),
+    row('error', { updatedAt: 100 }),
+  ], { error: outcome(2, 'error') })
+  const statuses = new Map([
+    ['answer', { pendingInteraction: { kind: 'question' } }],
+    ['unread', { completionUnread: true }],
+  ])
+  const drafts = {
+    draft: { chars: 4 },
+    running: { chars: 1 },
+    unread: { chars: 1 },
+    answer: { chars: 1 },
+    error: { chars: 1 },
+  }
+  // 草稿不能盖住等待回答 / 报错 / 待查看 / 运行中；只有本身没有更高优先状态的
+  // 那个会话落到「未开始」。
+  assert.deepEqual(deriveHubRows({ list, statuses, drafts }).map((item) => [item.id, item.state]), [
+    ['error', 'error'],
+    ['answer', 'answer'],
+    ['unread', 'unread'],
+    ['draft', 'draft'],
+    ['running', 'running'],
+  ])
+})
+
+test('hasDraftContent 兼容扫描结果、字符串、Set / Map 与坏值', () => {
+  assert.equal(hasDraftContent({ s1: { chars: 2 } }, 's1'), true)
+  assert.equal(hasDraftContent({ s1: { chars: 0 } }, 's1'), false)
+  assert.equal(hasDraftContent({ s1: ' hi ' }, 's1'), true)
+  assert.equal(hasDraftContent({ s1: '   ' }, 's1'), false)
+  assert.equal(hasDraftContent({ s1: true }, 's1'), true)
+  assert.equal(hasDraftContent({ s1: null }, 's1'), false)
+  assert.equal(hasDraftContent(new Set(['s1']), 's1'), true)
+  assert.equal(hasDraftContent(new Map([['s1', { chars: 1 }]]), 's1'), true)
+  assert.equal(hasDraftContent(undefined, 's1'), false)
+  assert.equal(hasDraftContent(null, 's1'), false)
 })
 
 test('同一状态内按更新时间倒序，时间相同用 id 兜底', () => {
@@ -115,6 +159,12 @@ test('空白会话与子代理会话默认不进入状态栏', () => {
     row('normal', { running: true }),
   ])
   assert.deepEqual(deriveHubRows({ list, statuses: new Map() }).map((item) => item.id), ['normal'])
+  // 空白占位行与子代理会话即使输入框里有草稿也不进状态栏。
+  assert.deepEqual(
+    deriveHubRows({ list, statuses: new Map(), drafts: { blank: { chars: 1 }, sub: { chars: 1 } } })
+      .map((item) => item.id),
+    ['normal'],
+  )
   assert.deepEqual(
     deriveHubRows({ list, statuses: new Map(), includeSubagents: true }).map((item) => item.id).sort(),
     ['normal', 'sub'],
@@ -135,6 +185,9 @@ test('任务栏聚合遵守红 > 黄 > 绿 > 无，且运行中不点灯', () =>
   assert.equal(aggregateTaskbarState([{ state: 'unread' }]), 'green')
   // 运行中是常态：任务栏不点灯，避免常亮绿灯盖掉红/黄提示。
   assert.equal(aggregateTaskbarState([{ state: 'running' }]), 'none')
+  // 未发送草稿也不需要点灯：它不要求你立刻处理，任务栏留给红 / 黄 / 绿。
+  assert.equal(aggregateTaskbarState([{ state: 'draft' }]), 'none')
+  assert.equal(aggregateTaskbarState([{ state: 'draft' }, { state: 'running' }]), 'none')
   assert.equal(aggregateTaskbarState([{ state: 'running' }, { state: 'unread' }]), 'green')
   assert.equal(aggregateTaskbarState([{ state: 'running' }, { state: 'answer' }]), 'yellow')
   assert.equal(aggregateTaskbarState([{ state: 'answer' }, { state: 'error' }]), 'red')

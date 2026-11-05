@@ -6,7 +6,8 @@
 A missing "how are all my Sessions doing right now?" surface for [DeepSeek Harness](https://github.com/deepseek-ai):
 
 - **A rail in the top title bar** listing the Sessions that need you, ordered by
-  `red (failed) > yellow (waiting for your answer) > green (unread) > blue (running)`.
+  `red (failed) > yellow (waiting for your answer) > green (unread) > gray (not started) > blue (running)`.
+  A Session with an unsent draft in its composer shows up as a gray "Not started" chip.
   One click jumps straight to that Session.
 - **Windows notifications** when a Session changes state (finished / failed / needs an
   answer), where clicking the toast reopens the Session and brings the DSH window forward.
@@ -28,8 +29,9 @@ is waiting for my answer?**
 **A: install `dsh-session-status-hub`.** It does three things:
 
 1. **A rail in the title bar**, ordered
-   `red (failed) > yellow (waiting for you) > green (unread) > blue (running)`. The 3 chips
-   shown by default are always the 3 that need you most; one click jumps to that Session.
+   `red (failed) > yellow (waiting for you) > green (unread) > gray (not started) > blue (running)`.
+   The 3 chips shown by default are always the 3 that need you most; one click jumps to that
+   Session. A Session whose composer holds an unsent draft appears as a gray "Not started" chip.
 2. **A taskbar status dot** via `ITaskbarList3.SetOverlayIcon` — red / yellow / green on the
    DSH taskbar button, still visible while the window is minimized or buried behind other
    apps.
@@ -61,16 +63,20 @@ What it deliberately does *not* do:
 | **failed** `error` | `hubTurnOutcome.outcome ∈ error / interrupted`, not yet acknowledged | 🔴 + 报错 | red (highest) |
 | **waiting** `answer` | `pendingInteraction.kind ∈ approval / plan-review / question` | 🟡 + 等待回答 | yellow |
 | **unread** `unread` | `completionUnread === true`, or the plugin's own "finished in background" record | 🟢 + 待查看 | green |
+| **not started** `draft` | non-blank `draft.text` in `localStorage["dsh.conversation.<sessionId>"]` (the composer draft persisted by ui-conversation) | ⚪ + 未开始 | **no dot** |
 | **running** `running` | `sessionStatus.running`, or the Session row's `running` | 🔵 + 运行中 | **no dot** |
 
-- Chip order is the colour order (red > yellow > green > blue); within a state, most
+- Chip order is the colour order (red > yellow > green > gray > blue); within a state, most
   recently updated first. The 3 chips shown by default are therefore always the 3 that
-  most need you.
+  most need you. Gray sits before blue on purpose: an unfinished draft is your own unfinished
+  thought, while a running Session is background work that needs nothing from you yet — putting
+  drafts last would let running Sessions fill the default 3 and hide them.
 - Classification order (which bucket a Session lands in) is independent of display order:
-  waiting > failed > running > unread.
+  waiting > failed > running > unread > not started. Drafts never override any of the four
+  established states.
 - **Running never lights the taskbar.** Running is the normal case; lighting it would leave
   the dot permanently green and mask real red/yellow signal. It still shows as a blue
-  pulsing chip.
+  pulsing chip. **Drafts never light the taskbar either.**
 - Blank "new session" rows and subagent Sessions (`origin: subagent`) are ignored.
 - A "failed" chip clears when you click it or when you are looking at that Session with the
   window focused; a new failure re-lights it.
@@ -84,6 +90,19 @@ same edge and, when the window is not in the foreground, records the completion 
 (`localStorage` `dsh-session-status-hub/local-unread-v1`) so the green dot, the green taskbar mark
 and the 待查看 chip all appear. It clears when you come back and look at that Session, or when
 you click its notification/chip.
+
+### Where "not started" comes from
+
+`ui-conversation` persists every Session's composer draft under
+`localStorage["dsh.conversation.<sessionId>"]` as `{"draft": "text"}` (legacy) or
+`{"draft": {"text": "...", "references": [...]}}` (current). The plugin reads that key, trims
+`draft.text`, and only keeps `{ chars }` — the draft body never enters plugin state, is never
+persisted or sent anywhere, and is never rendered. Parsing never touches the DOM or the editor.
+
+The scan runs on `input`/`compositionend` (200 ms coalescing), on cross-tab `storage` events,
+and on a 2 s poll while the page is visible; focus/visibility changes trigger one more scan.
+Sending the message or clearing the composer removes the chip. Drafts do not notify, do not
+light the taskbar, and do not auto-expire — the same lifecycle as DSH's own draft.
 
 ## Notification categories
 
@@ -184,13 +203,14 @@ state facts ("this turn finished and you haven't looked"), not interruptions.
 ## Diagnostics
 
 ```powershell
-npm run check     # 1) lib/client.js matches src/  2) 146 test cases
+npm run check     # 1) lib/client.js matches src/  2) 158 test cases
 ```
 
 ```js
 __DSH_SESSION_HUB__.inspect()            // versions, services, focused, hostHalf, rows, taskbar
 __DSH_SESSION_HUB__.getRows()            // current rail rows
 __DSH_SESSION_HUB__.getTaskbarState()    // red / yellow / green / none
+__DSH_SESSION_HUB__.getDrafts()          // { [sessionId]: { chars } } — sessions with an unsent draft (counts only, no text)
 __DSH_SESSION_HUB__.getLocalUnread()     // plugin-side "finished in background, unseen" records
 __DSH_SESSION_HUB__.testNotification()   // fire a test toast; clicking it should jump back
 __DSH_SESSION_HUB__.getLiveNotifications() // toasts still on screen / in Action Center that auto-dismissal can clear
@@ -220,6 +240,7 @@ dsh-session-status-hub/
 ├── src/hub-identity.js      plugin id / projection key / route prefix / signature header / storage keys (shared)
 ├── src/hub-strings.js       UI strings zh/en (single source)
 ├── src/hub-model.js         rail + taskbar logic (pure, unit-testable)
+├── src/hub-drafts.js        unsent-draft read/normalize (pure, unit-testable)
 ├── src/notify-core.js       notification edge engine (pure, unit-testable)
 ├── src/hub-scroll.js        sidebar row reveal/scroll + reveal controller (unit-testable)
 ├── src/hub-json-store.js    localStorage JSON read/write (fallback on read, warn on write)
@@ -230,7 +251,7 @@ dsh-session-status-hub/
 ├── src/hub-slots.js         slot registration
 ├── src/client-main.js       wiring: services → model → notifications / rail / taskbar
 ├── build/bundle.mjs         inlines src/ in order into one classic-script bundle
-├── test/                    146 node:test cases, zero dependencies
+├── test/                    158 node:test cases, zero dependencies
 ├── locale/{zh,en}.json      plugin manager title and description
 ├── icon.svg                 plugin icon
 ├── cordis.patch.yml         bundle patch inserting the session-hub row
@@ -265,6 +286,11 @@ Session at all.
   `null` when that happens.
 - Failed/unread marks do not expire on their own: failures need an explicit ack, unread needs
   you to open the Session.
+- "Not started" relies on ui-conversation's draft storage: key `dsh.conversation.<sessionId>`,
+  value `{ draft: string | { text, references, command? } }`. If upstream changes the key or
+  shape, this state disappears silently while the other four states keep working. Drafts with
+  attachments but no text are not detected (the persisted draft has no text), and drafts do not
+  auto-expire.
 - The "failed" state cannot be painted on the official sidebar row dot (the upstream row
   state machine has no error state), so the truth is surfaced in the row hover card instead
   (`本轮失败` / `本轮中断`).
@@ -283,7 +309,12 @@ Session at all.
 - **Everything stays on this machine**: config, watermarks, error acks, unread records and
   the notification landing log live in `localStorage` under the `dsh-session-status-hub/` prefix.
   The plugin never reads conversation content — only the last turn's outcome and a few state
-  booleans.
+  booleans. The only user input it touches is the draft text, and only to measure its trimmed
+  length (next bullet).
+- **Drafts are read as a boolean only**: to derive "Not started", the plugin reads `draft.text`
+  from `dsh.conversation.<sessionId>`, keeps only its trimmed length, and immediately discards
+  the body. In-memory draft state is `{ chars }`; it is never displayed, persisted or sent
+  anywhere. `__DSH_SESSION_HUB__.getDrafts()` exposes character counts only.
 - **Internal routes require a signature header**: every client request carries
   `x-dsh-session-status-hub: 1` and the host half only answers when it is present (403 otherwise).
   This is **not** authentication — it blocks *cross-site triggering*: a custom header turns a

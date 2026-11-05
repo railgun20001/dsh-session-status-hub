@@ -108,11 +108,22 @@ async function createHarness(boot = {}) {
     focus: () => { state.focusCalls += 1 },
   }
 
+  const docListeners = new Map()
   const doc = {
     visibilityState: 'visible',
     hasFocus: () => true,
     // 侧栏行查找走 `[data-row-key]` 粗筛；行桩由测试通过 state.rows 提供。
     querySelectorAll: (selector) => (selector === '[data-row-key]' ? state.rows : []),
+    // 草稿监听会挂 input / compositionend / visibilitychange；测试里按需手动派发。
+    addEventListener: (type, fn) => {
+      const list = docListeners.get(type) ?? []
+      list.push(fn)
+      docListeners.set(type, list)
+    },
+    removeEventListener: (type, fn) => {
+      const list = docListeners.get(type) ?? []
+      docListeners.set(type, list.filter((item) => item !== fn))
+    },
   }
 
   const localStorageStub = {
@@ -237,6 +248,10 @@ async function createHarness(boot = {}) {
       listState.byId[id] = { ...listState.byId[id], ...patch }
       listStore.publish({ ...listState, byId: { ...listState.byId } })
     },
+    /** 派发一个 document 事件（草稿输入监听用）。 */
+    fireDocument: (type) => {
+      for (const fn of docListeners.get(type) ?? []) fn({ type })
+    },
     /** 全部 effect 清理。 */
     dispose: () => {
       for (const disposer of effectDisposers.splice(0)) disposer()
@@ -315,6 +330,54 @@ test('客户端半内联的版本与 package.json 一致（版本漂移护栏）
     await settle()
     const pkg = JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8'))
     assert.equal(globalThis.__DSH_SESSION_HUB__.inspect().version, pkg.version)
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('输入框有未发送草稿时出现「未开始」，清空后消失', async () => {
+  const harness = await createHarness({ sessions: [sessionRow('s1')] })
+  try {
+    await settle()
+    assert.deepEqual(globalThis.__DSH_SESSION_HUB__.getRows(), [])
+
+    // 模拟 ui-conversation 把草稿写进 localStorage。状态栏只需要知道「有没有」，
+    // 诊断里也只暴露字符数——正文不进入插件状态。
+    harness.state.storage.set(
+      'dsh.conversation.s1',
+      JSON.stringify({ draft: { text: '还没发出去', references: [] }, view: null, viewRequest: null }),
+    )
+    globalThis.__DSH_SESSION_HUB__.tick()
+    await settle()
+
+    const rows = globalThis.__DSH_SESSION_HUB__.getRows()
+    assert.deepEqual(rows.map((item) => [item.id, item.state]), [['s1', 'draft']])
+    assert.deepEqual(globalThis.__DSH_SESSION_HUB__.getDrafts(), { s1: { chars: 5 } })
+    assert.equal(JSON.stringify(globalThis.__DSH_SESSION_HUB__.getDrafts()).includes('还没发出去'), false)
+
+    harness.state.storage.delete('dsh.conversation.s1')
+    globalThis.__DSH_SESSION_HUB__.tick()
+    await settle()
+    assert.deepEqual(globalThis.__DSH_SESSION_HUB__.getRows(), [])
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('打字事件会立即触发草稿扫描，不必等 2 秒轮询', async () => {
+  const harness = await createHarness({ sessions: [sessionRow('s1')] })
+  try {
+    await settle()
+    harness.state.storage.set('dsh.conversation.s1', JSON.stringify({ draft: '打字中' }))
+    harness.fireDocument('input')
+    // 输入事件合并窗口 200ms + 观察合并窗口 30ms，留足余量。
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.deepEqual(
+      globalThis.__DSH_SESSION_HUB__.getRows().map((item) => [item.id, item.state]),
+      [['s1', 'draft']],
+    )
   } finally {
     harness.dispose()
     harness.restore()

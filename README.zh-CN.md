@@ -5,8 +5,8 @@
 
 给 DeepSeek Harness 补一个「所有对话现在怎么样了」的统一视图：
 
-- **软件顶端标题栏的状态栏**：按颜色顺序 `红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）`
-  排列当前需要关注的对话，点一下直接跳到该对话；
+- **软件顶端标题栏的状态栏**：按颜色顺序 `红（报错）> 黄（等待回答）> 绿（待查看）> 灰（未开始）> 蓝（运行中）`
+  排列当前需要关注的对话，点一下直接跳到该对话；输入框里有未发送草稿的会话会以灰色「未开始」出现；
 - **Windows 通知**：对话状态发生变化（完成 / 失败 / 需要你回答）时弹系统通知，
   点击通知跳回对应对话并尽量把 DSH 窗口提到前台；
 - **任务栏状态点**：用 `ITaskbarList3.SetOverlayIcon` 在任务栏的 DSH 图标上画
@@ -21,8 +21,9 @@
 
 **A：装 `dsh-session-status-hub`。** 它做三件事：
 
-1. **标题栏状态栏**：按 `红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）` 排序，
-   默认只显示最需要你的 3 条，点一下直接跳到该对话；
+1. **标题栏状态栏**：按 `红（报错）> 黄（等待回答）> 绿（待查看）> 灰（未开始）> 蓝（运行中）` 排序，
+   默认只显示最需要你的 3 条，点一下直接跳到该对话；输入框里打了字但还没发送的会话会以灰色
+   「未开始」出现；
 2. **任务栏状态点**：用 `ITaskbarList3.SetOverlayIcon` 在 DSH 任务栏图标上打红 / 黄 / 绿点，
    窗口最小化或被压在别的应用后面时依然看得见；
 3. **Windows 通知**：完成 / 失败 / 需要你回答时弹系统通知，标题带颜色 emoji，
@@ -41,19 +42,26 @@
 
 ## 1. 状态定义
 
-| 状态 | 判定依据（客户端受支持服务） | 状态栏 | 任务栏 |
+| 状态 | 判定依据（客户端可观测事实） | 状态栏 | 任务栏 |
 |---|---|---|---|
 | **报错** `error` | 宿主投影 `hubTurnOutcome.outcome ∈ error / interrupted`，且该 `seq` 未被确认 | 🔴 红点 + 「报错」 | 红（最高） |
 | **等待回答** `answer` | `uiSession.sessionStatus.pendingInteraction.kind ∈ approval / plan-review / question` | 🟡 黄点 + 「等待回答」 | 黄（无红灯时） |
 | **待查看** `unread` | `sessionStatus.completionUnread === true`（原生「未读完成」绿点）**或**本插件补记的「后台完成」 | 🟢 绿点 + 「待查看」 | 绿（无红/黄时） |
+| **未开始** `draft` | `localStorage["dsh.conversation.<sessionId>"].draft.text` 去空白后非空（ui-conversation 持久化的输入框草稿） | ⚪ 灰点 + 「未开始」 | **不点灯** |
 | **运行中** `running` | `sessionStatus.running` 或会话行 `running` | 🔵 蓝点 + 「运行中」 | **不点灯** |
 
-- **状态栏 chip 的显示顺序 = 颜色顺序：红 > 黄 > 绿 > 蓝**（`STATE_ORDER`），同一类里更新时间新的靠前。
+- **状态栏 chip 的显示顺序 = 颜色顺序：红 > 黄 > 绿 > 灰 > 蓝**（`STATE_ORDER`），同一类里更新时间新的靠前。
   最需要你介入的排最前，正在跑的排最后——所以默认只显示的 3 条永远不会被「运行中」占位。
+  灰排在蓝前：草稿是你没说完的话，运行中是暂时不用你管的后台工作；若把灰排在最后，
+  默认 3 条容易被运行中占满，草稿就悄悄看不见了。
 - **判定顺序**（一个会话归到哪一类，取第一个命中的）与显示顺序无关：
-  等待回答 > 报错 > 运行中 > 待查看。既在等你回答、上一轮又还没确认失败时按「等待回答」显示。
+  等待回答 > 报错 > 运行中 > 待查看 > 未开始。既在等你回答、上一轮又还没确认失败时按「等待回答」显示；
+  运行中 / 待查看 / 报错 / 等待回答都优先于草稿，不会被「未开始」盖住。
 
 - 空白「新会话」占位行与子代理会话（`origin: subagent`）不进入状态栏，也不通知。
+- **「未开始」是输入框草稿，不是会话内容**：输入第一个非空字符后出现；发送后草稿被清空、
+  chip 立即消失；删光输入框也会消失；刷新页面后仍在（读的是持久化草稿）。它**不弹通知、
+  不点亮任务栏**——只做「这个会话你还没说完」的提示。
 - 「报错」在**点击该条目**或**正看着该会话且窗口聚焦**时自动确认（记下 `seq`），
   不会永远亮着；同一个会话出现新的报错会重新亮起。
 - 「待查看」优先复用原生 `completionUnread`，打开会话即熄灭；**当前对话在窗口不在前台时
@@ -128,6 +136,47 @@
 
 ---
 
+## 1.3 未开始：输入框草稿从哪来、怎么更新
+
+DSH 的 `ui-conversation` 会把**每个会话**的输入框草稿持久化到浏览器存储：
+
+```text
+localStorage["dsh.conversation.<sessionId>"] = {
+  draft: "纯文本"                                       // 旧版
+       | { text: "…", references: [...], command? }   // 当前版本
+  view: null,
+  viewRequest: null
+}
+```
+
+插件只读这个键，不碰 DOM、不碰编辑器、不 retain 会话。判定很简单：把 `draft.text`
+`trim()` 后长度大于 0 就算「未开始」；**正文不进入插件状态、不落盘、不外发、不渲染**，
+内存里只有 `{ chars: 数字 }`（见 `src/hub-drafts.js` 的隐私边界说明）。
+
+更新路径有四条：
+
+| 触发 | 时机 | 作用 |
+|---|---|---|
+| `input` / `compositionend` | 打字后 200ms 合并一次 | 当前页面立即出现 / 消失，不用等轮询 |
+| `storage` 事件 | 其他标签页 / 窗口写入 `dsh.conversation.*` | 多标签页同步 |
+| 2 秒轮询 | 页面可见时 | 兜住程序化写入、会话切换等没有输入事件的路径 |
+| 焦点 / 可见性变化 | 回到窗口时 | 隐藏期间轮询是停的，回来补一次 |
+
+为什么不用 `ctx.conversation.input.shell(id).draftSnapshot`：那个服务只覆盖已经 retain
+的会话，而且会顺带创建整台输入机与 Lexical 编辑器；为了读一个「有没有草稿」的布尔值，
+代价不成比例。持久化键是 `ui-conversation` 自己读回草稿的同一份数据，页面刷新后草稿还在，
+插件也就跟着还在。
+
+边界：
+
+- **只算文本**：只有附件、没有文字的草稿在持久化里没有 `text`，不会显示「未开始」；
+- **空白新会话占位行不显示**（与既有规则一致）；子代理会话也不显示；
+- **不自动过期**：草稿会一直保留到你发送或清空输入框，这与 DSH 自己的草稿行为一致；
+- **格式依赖上游**：如果未来 `ui-conversation` 改了存储键或 `draft` 形状，本状态会静默消失；
+  其他四类状态、通知与任务栏不受任何影响（解析失败一律当作「没有草稿」）。
+
+---
+
 
 ## 2. 界面位置
 
@@ -144,6 +193,8 @@
 - 默认只显示优先级最高的 3 条；还有更多时显示 `+N`，点一下展开全部，再点「收起」恢复，
   既不挤压标题，也不会把第 4 条截成半截；
 - chip 横向排列，超出宽度可横向滚动（隐藏滚动条），不挤压标题；
+- 「未开始」chip 用三级文字灰（`--dsw-alias-label-tertiary`）：比空闲点更清楚，
+  又比红 / 黄 / 绿低调，不使用任何强调色；
 - 全部空闲时显示一个低调的「全部空闲」；没有可用会话（或插槽钩子缺失）时也不会报错；
 - 视觉只用 `--dsw-alias-*` / 设计系统 token，浅色/深色主题都跟随宿主。
 
@@ -304,6 +355,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-identity.js      插件 id / 投影键 / 路由前缀 / 签名头 / 存储键（两半共用）
 │   ├── hub-strings.js       界面文案 zh/en（单一来源）
 │   ├── hub-model.js         状态栏 / 任务栏纯逻辑（可单测）
+│   ├── hub-drafts.js        未发送草稿的读取与归一化（纯逻辑，可单测）
 │   ├── notify-core.js       通知边沿引擎（纯逻辑，可单测）
 │   ├── hub-scroll.js        侧栏会话行定位、滚动与揭示控制器（可单测）
 │   ├── hub-json-store.js    localStorage JSON 读写（读失败回落、写失败只告警）
@@ -314,7 +366,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-slots.js         三处插槽注册
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    146 个用例（node:test，零依赖）
+├── test/                    158 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -421,7 +473,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 146 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 158 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
@@ -433,6 +485,7 @@ __DSH_SESSION_HUB__.inspect()
 
 __DSH_SESSION_HUB__.getRows()          // 当前状态栏行
 __DSH_SESSION_HUB__.getTaskbarState()  // red / yellow / green / none
+__DSH_SESSION_HUB__.getDrafts()        // { [sessionId]: { chars } }：有未发送草稿的会话（只有字符数，没有正文）
 __DSH_SESSION_HUB__.getLocalUnread()   // { [sessionId]: seq }：补记的「后台完成、尚未查看」
 __DSH_SESSION_HUB__.clearLocalUnread() // 手动清掉全部补记（绿灯随之熄灭）
 __DSH_SESSION_HUB__.setTaskbarState('red')    // 手动试任务栏红点（排障）
@@ -476,6 +529,9 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
 6. 点击红点条目 → 报错确认，红点与任务栏红灯消失，行悬停提示同时消失。
 7. 制造一个长列表（展开很多会话 / 把列表滚到远处），点击状态栏 chip 或通知跳转 →
    **左侧列表自动滚到目标会话行**；目标所在分组折叠时，至少滚到它所属的分组标题。
+8. 在某个会话的输入框里打几个字但**不要发送** → 状态栏出现灰点「未开始」，任务栏不变；
+   清空输入框或发送后灰点消失；刷新页面（`Ctrl+R`）后如果草稿还在，灰点也应重新出现。
+   控制台 `__DSH_SESSION_HUB__.getDrafts()` 只应看到 `{ chars }`，不应出现草稿正文。
 
 ---
 
@@ -502,6 +558,10 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
 - **左侧列表滚动依赖官方 DOM 约定**：会话行 / 分组行按 `data-row-key`（`session:<id>` /
   `workspace:<id>`）定位。上游若改掉该属性，滚动会静默失效（跳转本身不受影响）——
   `__DSH_SESSION_HUB__.revealSessionRow(id)` 返回 null 即可确认约定漂移。
+- **「未开始」依赖 ui-conversation 的草稿存储约定**：键是 `dsh.conversation.<sessionId>`，
+  值是 `{ draft: string | { text, references, command? } }`。上游若改键名或形状，本状态会
+  静默消失，其余状态不受影响；只有附件没有文字的草稿也不会显示（持久化里没有文本）。
+- **草稿不会自动过期**：和 DSH 自己的草稿一致，输入框里留着就一直显示；发送 / 清空即消失。
 
 ---
 
@@ -527,7 +587,11 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
   没有遥测、没有统计、不访问第三方接口。
 - **数据只落本机**：配置、水位、报错确认、补记的「待查看」与通知落地日志全部存在浏览器
   `localStorage`（键前缀 `dsh-session-status-hub/`）；会话投影的检查点由 DSH 自己的投影注册表
-  落盘。插件不读会话正文，只读「最后一个回合的结局」与几个状态布尔值。
+  落盘。插件不读会话正文，只读「最后一个回合的结局」与几个状态布尔值；唯一的用户输入读取
+  是下面这条「草稿只读有没有」——只取长度，不留正文。
+- **草稿只读「有没有」**：为了判断「未开始」，插件会读 `dsh.conversation.<sessionId>` 里的
+  `draft.text`，但只取 `trim()` 后的长度并立刻丢弃正文；内存里的草稿表只有 `{ chars }`，
+  不展示、不落盘、不外发。诊断入口 `__DSH_SESSION_HUB__.getDrafts()` 同样只有字符数。
 - **内部路由要求签名头**：客户端每条请求都带 `x-dsh-session-status-hub: 1`，宿主半见到才处理
   （缺头直接 403）。这**不是鉴权**，而是用来挡「跨站触发」：自定义头会把浏览器请求升级成
   需要预检的跨站请求，而宿主半不返回任何 CORS 响应头，于是别的网页即使能 POST 到本机端口

@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session Status Hub",
-    "description": "A top-titlebar rail (after the App / Edit menus) listing running, waiting-for-answer, unread and failed Sessions; state changes raise Windows notifications and mark the taskbar icon red, yellow or green."
+    "description": "A top-titlebar rail (after the App / Edit menus) listing running, waiting-for-answer, unread, failed and not-started Sessions; an unsent draft shows as a gray \"Not started\" chip. State changes raise Windows notifications and mark the taskbar icon red, yellow or green."
   }
 }

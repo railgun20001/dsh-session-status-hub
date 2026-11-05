@@ -44,6 +44,7 @@ const SOURCES = Object.freeze([
   { file: 'hub-identity.js', label: '插件 id 与存储键（单一来源）' },
   { file: 'hub-strings.js', label: '界面文案（单一来源）' },
   { file: 'hub-model.js', label: '状态栏 / 任务栏纯逻辑' },
+  { file: 'hub-drafts.js', label: '未发送草稿的读取与归一化（纯逻辑）' },
   { file: 'notify-core.js', label: '通知边沿引擎（纯逻辑）' },
   { file: 'hub-scroll.js', label: '侧栏会话行定位、滚动与揭示控制器' },
   { file: 'hub-json-store.js', label: 'localStorage JSON 读写' },

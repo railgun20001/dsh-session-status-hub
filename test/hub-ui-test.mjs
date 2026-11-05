@@ -2,7 +2,7 @@
  * 状态栏 React 组件单测（不依赖真实 React）。
  *
  * 用最小 React 桩执行 src/hub-ui.js 里的组件工厂，断言：
- *   - 四类状态都渲染成对应的 chip 与中文短标签；
+ *   - 四类既有状态与「未开始」草稿都渲染成对应的 chip 与中文短标签；
  *   - 空状态渲染「全部空闲」；
  *   - 点击 chip 会先确认报错、再打开对应会话；
  *   - 组件只使用官方标准 props（useSessions / useSessionStatus），不读 DOM。
@@ -262,6 +262,34 @@ test('「后台完成」记账也会渲染成「待查看」chip（官方 comple
     useSessionStatus: (selector) => selector(new Map([['s1', { completionUnread: false }]])),
   })
   assert.match(collectText(plain).join('|'), /全部空闲/)
+})
+
+test('有未发送草稿的会话渲染成灰色「未开始」chip', () => {
+  const draftStore = {
+    subscribe: () => () => {},
+    getSnapshot: () => ({ s1: { chars: 6 } }),
+  }
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+    drafts: draftStore,
+  })
+  const list = {
+    byId: { s1: row('s1') },
+    projectionsBySession: { s1: { values: { hubTurnOutcome: null } } },
+  }
+  const tree = Rail({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map([['s1', { running: false }]])),
+  })
+  const chip = findNode(tree, (node) => typeof node.props?.className === 'string'
+    && node.props.className.includes('dsh-hub__chip--draft'))
+  assert.ok(chip !== undefined, '应当渲染未开始 chip')
+  assert.match(collectText(tree).join('|'), /未开始/)
+  // 灰色点复用主题的中性色（与官方空闲点同色），不给它安排任何强调色。
+  const style = tree.children[0].children[0]
+  assert.match(style, /\.dsh-hub__chip--draft \.dsh-hub__dot\{background:var\(--dsw-alias-label-tertiary\)\}/)
 })
 
 test('chrome 变体带 fixed 顶栏类与菜单偏移 CSS', () => {

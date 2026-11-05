@@ -1,8 +1,8 @@
 {
   "name": "dsh-session-status-hub",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "type": "module",
-  "description": "DeepSeek Harness 会话状态中心：顶端状态栏汇总运行中 / 待回答 / 待查看 / 报错会话，状态变化弹 Windows 通知，并用红黄绿点标记任务栏图标",
+  "description": "DeepSeek Harness 会话状态中心：顶端状态栏汇总运行中 / 待回答 / 待查看 / 报错 / 未开始（未发送草稿）会话，状态变化弹 Windows 通知，并用红黄绿点标记任务栏图标",
   "keywords": [
     "dsh",
     "dsh-plugin",
@@ -51,8 +51,8 @@
   ],
   "scripts": {
     "build": "node build/bundle.mjs",
-    "test": "node --test test/hub-model-test.mjs test/hub-scroll-test.mjs test/hub-ui-test.mjs test/hub-notify-test.mjs test/hub-stores-test.mjs test/hub-host-test.mjs test/projection-test.mjs test/client-half-test.mjs test/raise-window-test.mjs",
-    "check": "node build/bundle.mjs --check && node --test test/hub-model-test.mjs test/hub-scroll-test.mjs test/hub-ui-test.mjs test/hub-notify-test.mjs test/hub-stores-test.mjs test/hub-host-test.mjs test/projection-test.mjs test/client-half-test.mjs test/raise-window-test.mjs"
+    "test": "node --test test/hub-model-test.mjs test/hub-drafts-test.mjs test/hub-scroll-test.mjs test/hub-ui-test.mjs test/hub-notify-test.mjs test/hub-stores-test.mjs test/hub-host-test.mjs test/projection-test.mjs test/client-half-test.mjs test/raise-window-test.mjs",
+    "check": "node build/bundle.mjs --check && node --test test/hub-model-test.mjs test/hub-drafts-test.mjs test/hub-scroll-test.mjs test/hub-ui-test.mjs test/hub-notify-test.mjs test/hub-stores-test.mjs test/hub-host-test.mjs test/projection-test.mjs test/client-half-test.mjs test/raise-window-test.mjs"
   },
   "dsh": {
     "bundle": {

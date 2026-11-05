@@ -43,7 +43,8 @@ function createFallbackT(dict) {
  *   ackError: (sessionId: string, seq: number|null) => void,
  *   acks: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
  *   unread?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
- * }} deps 由 client-main 注入的动作、确认表与「后台完成」记账（`unread` 可选）。
+ *   drafts?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
+ * }} deps 由 client-main 注入的动作、确认表、「后台完成」记账与草稿表（后两者可选）。
  * @param {'header'|'chrome'} [variant] 渲染位置：会话标题前，或 Windows 顶栏菜单之后。
  * @returns {Function} React 函数组件。
  */
@@ -52,8 +53,11 @@ function createSessionHubRail(React, deps, variant = 'header') {
   const EMPTY_LIST = { byId: {}, projectionsBySession: {} }
   const EMPTY_STATUSES = new Map()
   const EMPTY_UNREAD = {}
+  const EMPTY_DRAFTS = {}
   /** 「后台完成」记账的缺省仓库：没有注入时组件照常渲染，只是没有补记的绿点。 */
   const EMPTY_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_UNREAD }
+  /** 草稿表的缺省仓库：没有注入时组件照常渲染，只是没有「未开始」灰点。 */
+  const EMPTY_DRAFT_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_DRAFTS }
 
   /** 文案回落：插槽没有绑定 locale 时也能显示中文。 */
   const fallbackT = createFallbackT(HUB_STRINGS.zh)
@@ -89,6 +93,8 @@ function createSessionHubRail(React, deps, variant = 'header') {
     '.dsh-hub__chip--error .dsh-hub__dot{background:var(--dsw-alias-state-error-primary)}',
     '.dsh-hub__chip--running .dsh-hub__dot{background:var(--dsw-static-blue-400,#60a5fa);animation:dsh-hub-pulse 1.4s ease-in-out infinite}',
     '.dsh-hub__chip--unread .dsh-hub__dot{background:var(--dsw-alias-state-success-primary)}',
+    // 「未开始」用主题里的三级文字灰：比空闲点更清楚，又比红 / 黄 / 绿低调。
+    '.dsh-hub__chip--draft .dsh-hub__dot{background:var(--dsw-alias-label-tertiary)}',
     '.dsh-hub__title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.dsh-hub__state{flex:none;font-size:10px;line-height:1;color:var(--dsw-alias-label-secondary)}',
     '.dsh-hub__more{flex:none;display:inline-flex;align-items:center;height:26px;padding:0 9px;border:1px dashed var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:1;cursor:pointer;white-space:nowrap}',
@@ -117,7 +123,9 @@ function createSessionHubRail(React, deps, variant = 'header') {
     // 官方的 completionUnread 对主视图会话永不置位；「窗口在后台时跑完」的绿点来自
     // 本插件的补记（client-main 的 localUnread），这里必须一起喂给模型。
     const localUnread = useSnapshot(deps.unread ?? EMPTY_STORE)
-    const rows = deriveHubRows({ list, statuses, ackErrors, localUnread, now: Date.now() })
+    // 草稿表只带 `{ chars }`（不含正文）；没有注入时退化为空表。
+    const drafts = useSnapshot(deps.drafts ?? EMPTY_DRAFT_STORE)
+    const rows = deriveHubRows({ list, statuses, ackErrors, localUnread, drafts, now: Date.now() })
     const [expanded, setExpanded] = React.useState(false)
     const visibleRows = expanded ? rows : rows.slice(0, 3)
     const hiddenCount = rows.length - visibleRows.length

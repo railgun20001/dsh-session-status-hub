@@ -12,15 +12,22 @@
  *      三态语义：对象 = 有结局；`null` = 键已注册但还没有回合；**缺失** = 宿主半未加载。
  * 2. `ctx.uiSession.sessionStatus`：`{ running, pendingInteraction, completionUnread }`
  *    - `pendingInteraction.kind` ∈ `approval` | `plan-review` | `question`
+ * 3. 草稿表：`{ [sessionId]: { chars } }`，由客户端半从 `dsh.conversation.<id>` 扫描
+ *    （见 hub-drafts；只有字符数，没有正文），用来推导「未开始」灰点。
  *
  * ## 状态与优先级
  *
- *   报错（error，红） > 等待回答（answer，黄） > 待查看（unread，绿） > 运行中（running，蓝）
+ *   报错（error，红） > 等待回答（answer，黄） > 待查看（unread，绿）
+ *   > 未开始（draft，灰） > 运行中（running，蓝）
  *
- * 口径与任务栏一致：**红 → 黄 → 绿 → 蓝**，越靠前的颜色越需要你介入，
+ * 口径与任务栏一致：**红 → 黄 → 绿 → 灰 → 蓝**，越靠前的颜色越需要你介入，
  * 也让「状态栏 chip 顺序」和「任务栏点灯颜色」永远说的是同一种优先级。
  * 注意这只决定**显示顺序**；一个会话归到哪一类仍由 `deriveHubRows` 的判定顺序决定
  * （同时在等你回答又还没确认上一轮失败时，按「等待回答」显示，因为它更要求你动手）。
+ *
+ * 「未开始」= 输入框里有尚未发送的草稿（由客户端半从 `dsh.conversation.<id>` 读取，
+ * 见 hub-drafts）。它排在运行中之前：运行中的会话是「暂时不用你管」的后台工作，
+ * 而草稿是你没说完的话；如果排在运行中之后，默认 3 条会被运行中占满、草稿悄悄消失。
  *
  * 任务栏只点「需要你处理」的灯：
  *   - 有报错 → red
@@ -50,16 +57,19 @@ export const HUB_PENDING_KINDS = Object.freeze(['approval', 'plan-review', 'ques
 /**
  * 状态排序：数字越小越靠前。
  *
- * 顺序刻意与颜色一致——**红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）**：
- * 一眼扫过去就是「先看红的、最后才看还在跑的」，也和任务栏点灯的优先级同源。
+ * 顺序刻意与颜色一致——**红（报错）> 黄（等待回答）> 绿（待查看）
+ * > 灰（未开始）> 蓝（运行中）**：一眼扫过去就是「先看红的、最后才看还在跑的」，
+ * 也和任务栏点灯的优先级同源。灰排在蓝前的原因见模块头注释：草稿是没说完的话，
+ * 运行中是暂时不用你管的后台工作，不能让默认 3 条被运行中占满而挤掉草稿。
  * 注意这只是**显示顺序**，不是状态判定顺序（判定见 deriveHubRows：
- * 等待回答 > 报错 > 运行中 > 待查看，同时在等你时优先按「等待回答」显示）。
+ * 等待回答 > 报错 > 运行中 > 待查看 > 未开始，同时在等你时优先按「等待回答」显示）。
  */
 export const STATE_ORDER = Object.freeze({
   error: 0,
   answer: 1,
   unread: 2,
-  running: 3,
+  draft: 3,
+  running: 4,
 })
 
 /** 状态的中文短标签（状态栏 chip 与通知调试用）。 */
@@ -68,6 +78,7 @@ export const STATE_LABELS = Object.freeze({
   error: '报错',
   running: '运行中',
   unread: '待查看',
+  draft: '未开始',
 })
 
 /** 归到「报错」的回合结局。interrupted 是宿主异常退出后的合成收尾。 */
@@ -173,6 +184,32 @@ export function hasLocalUnread(localUnread, id) {
 }
 
 /**
+ * 判断某会话是否有「尚未发送的非空草稿」。
+ *
+ * 接受的形状（都按 id 命中）：
+ *   - `{ [sessionId]: { chars: number } }`（hub-drafts 扫描结果，客户端半实际使用的形状）；
+ *   - `{ [sessionId]: string }`（测试 / 调用方便利，非空即算）；
+ *   - `Set<string>` / `Map<string, unknown>`（测试便利）。
+ *
+ * 注意：草稿正文永远不进入模型层，这里只判断「有没有」。
+ * @param {object|Set<string>|Map<string, unknown>|null|undefined} drafts 草稿表。
+ * @param {string} id 会话 id。
+ * @returns {boolean} 是否有草稿。
+ */
+export function hasDraftContent(drafts, id) {
+  if (drafts === null || drafts === undefined) return false
+  let value
+  if (drafts instanceof Set) value = drafts.has(id) ? true : undefined
+  else if (drafts instanceof Map) value = drafts.get(id)
+  else value = drafts[id]
+  if (typeof value === 'string') return value.trim() !== ''
+  if (typeof value === 'number') return value > 0
+  if (value === null || typeof value !== 'object') return value === true
+  if (typeof value.chars === 'number') return value.chars > 0
+  return typeof value.text === 'string' && value.text.trim() !== ''
+}
+
+/**
  * 归一化一张「会话 id → seq」的持久表：只保留非空字符串 id 与非负整数 seq。
  *
  * 「已确认的报错」与「补记的后台完成」是**同一形状**的两张表，以前各写了一份逐行相同的
@@ -206,16 +243,19 @@ export const normalizeLocalUnread = normalizeSeqMap
  * @param {object} [input.ackErrors] 已确认的报错 seq：`{ [sessionId]: number }`。
  * @param {object|Set<string>|Map<string, number>} [input.localUnread] 本插件补记的
  *   「后台完成、尚未查看」会话（见 {@link hasLocalUnread}）。
+ * @param {object|Set<string>|Map<string, unknown>} [input.drafts] 有未发送草稿的会话
+ *   （见 {@link hasDraftContent}；正文不会传进来，只传元数据）。
  * @param {boolean} [input.includeSubagents] 是否包含子代理会话（默认 false）。
  * @param {number} [input.now] 当前时间（保留给未来排序/过期策略）。
  * @returns {Array<{id: string, title: string, state: string, pendingKind: string|null, errorSeq: number|null, updatedAt: number}>}
- *   按颜色优先级（红 > 黄 > 绿 > 蓝）与更新时间排好序的行。
+ *   按颜色优先级（红 > 黄 > 绿 > 灰 > 蓝）与更新时间排好序的行。
  */
 export function deriveHubRows({
   list,
   statuses,
   ackErrors = {},
   localUnread = {},
+  drafts = {},
   includeSubagents = false,
   now = 0,
 } = {}) {
@@ -242,15 +282,18 @@ export function deriveHubRows({
     // 「待查看」有两个来源：官方 completionUnread（非主视图会话），以及本插件为
     // 「窗口不在前台时完成的当前会话」补记的记账（官方对主视图会话永远不会置位）。
     const unread = status?.completionUnread === true || hasLocalUnread(localUnread, id)
+    // 「未开始」只代表输入框里有未发送草稿；它是最弱的一类事实，不能盖住任何既有状态。
+    const draft = hasDraftContent(drafts, id)
 
-    // 判定顺序（一个会话只归一类，取第一个命中的）：等待回答 > 报错 > 运行中 > 待查看。
-    // 这与 STATE_ORDER（显示顺序 红 > 黄 > 绿 > 蓝）是两件事：同时「等你回答」又「上一轮
+    // 判定顺序（一个会话只归一类，取第一个命中的）：等待回答 > 报错 > 运行中 > 待查看 > 未开始。
+    // 这与 STATE_ORDER（显示顺序 红 > 黄 > 绿 > 灰 > 蓝）是两件事：同时「等你回答」又「上一轮
     // 还没确认失败」时，归为「等待回答」——它才是当下马上要你动手的那件事。
     let state = null
     if (pendingKind !== null) state = 'answer'
     else if (failed) state = 'error'
     else if (running) state = 'running'
     else if (unread) state = 'unread'
+    else if (draft) state = 'draft'
     if (state === null) continue
 
     rows.push({
@@ -263,7 +306,7 @@ export function deriveHubRows({
     })
   }
 
-  // 显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）；
+  // 显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 灰（未开始）> 蓝（运行中）；
   // 同一类里更新时间新的靠前，最后用 id 兜底保证顺序稳定（避免 React key 跳动）。
   rows.sort((a, b) => {
     const byState = (STATE_ORDER[a.state] ?? 99) - (STATE_ORDER[b.state] ?? 99)
@@ -277,8 +320,9 @@ export function deriveHubRows({
 /**
  * 把状态栏行聚合为任务栏状态（红 > 黄 > 绿 > 无）。
  *
- * 绿只来自「待查看」（未读完成），**不含运行中**：运行中是常态，任务栏常亮绿灯
- * 会盖掉真正需要你介入的红/黄提示。运行中仍然在状态栏 chip 里可见。
+ * 绿只来自「待查看」（未读完成），**不含运行中，也不含「未开始」草稿**：运行中与草稿
+ * 都不需要你立刻处理，任务栏常亮只会盖掉真正需要你介入的红/黄提示。它们仍然在状态栏
+ * chip 里可见。
  * @param {Array<{state: string}>} rows 状态栏行。
  * @returns {'red'|'yellow'|'green'|'none'} 任务栏状态。
  */

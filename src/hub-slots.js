@@ -29,6 +29,7 @@
  *   ackError: (sessionId: string, seq: number|null) => void,
  *   acks: object,
  *   localUnread: object,
+ *   drafts: object,
  * }} options.deps 组件要用的动作与状态仓库。
  * @returns {void}
  */
@@ -59,6 +60,7 @@ export function registerHubSlots({ ctx, pluginId, deps }) {
           ackError: deps.ackError,
           acks: deps.acks,
           unread: deps.localUnread,
+          drafts: deps.drafts,
         }
         const RailHeader = createSessionHubRail(React, railDeps, 'header')
         const RailChrome = createSessionHubRail(React, railDeps, 'chrome')
