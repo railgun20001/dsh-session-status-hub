@@ -16,6 +16,7 @@ import {
   createNotifySink,
   shortToastTag,
   CROSS_TAB_WINDOW_MS,
+  MAX_LIVE_TOASTS,
   NOTIFY_LOG_LIMIT,
   NOTIFY_SHOW_TIMEOUT_MS,
 } from '../src/hub-notify.js'
@@ -88,6 +89,8 @@ function notification(overrides = {}) {
     marker: '🟢',
     title: 'DSH · 任务完成',
     body: '会话 1',
+    // 「需要你回应」才带对应待交互 key；其他类别固定为 null。
+    pendingKey: null,
     ...overrides,
   }
 }
@@ -211,6 +214,98 @@ test('点击通知只认第一次，并按窗口是否聚焦决定要不要请�
   focused.sink.show(notification())
   focused.state.created[0].onclick()
   assert.deepEqual(focused.state.opened, [{ sessionId: 'session-1', options: { raise: false } }])
+})
+
+test('打开会话后只撤回该会话仍然挂着的通知（含多个类别），其他会话不受影响', () => {
+  const h = harness()
+  globalThis.Notification = fakeNotification(h.state)
+  h.sink.show(notification({ sessionId: 'session-1', dedupeKey: 'completed:1' }))
+  h.sink.show(notification({
+    sessionId: 'session-1', category: 'answer', marker: '🟡', dedupeKey: 'answer:q1', pendingKey: 'q1',
+  }))
+  h.sink.show(notification({ sessionId: 'session-2', dedupeKey: 'completed:2' }))
+  const [first, second, third] = h.state.created
+
+  assert.equal(h.sink.dismissSession('session-1'), 2)
+  assert.equal(first.closed, true)
+  assert.equal(second.closed, true)
+  assert.equal(third.closed, false)
+  assert.deepEqual(h.sink.getLive().map((item) => item.sessionId), ['session-2'])
+
+  // 重复撤回是幂等的：已经不登记的通知不会再被关一次。
+  assert.equal(h.sink.dismissSession('session-1'), 0)
+  assert.equal(first.closed, true)
+  // 非法入参不产生任何动作。
+  assert.equal(h.sink.dismissSession(''), 0)
+  assert.equal(h.sink.dismissSession(undefined), 0)
+})
+
+test('待交互消失或换成新 key 后，旧的「需要你回应」通知自动撤回', () => {
+  const h = harness()
+  globalThis.Notification = fakeNotification(h.state)
+  h.sink.show(notification({
+    sessionId: 'session-1', category: 'answer', marker: '🟡', dedupeKey: 'answer:q1', pendingKey: 'q1',
+  }))
+  h.sink.show(notification({
+    sessionId: 'session-2', category: 'answer', marker: '🟡', dedupeKey: 'answer:q2', pendingKey: 'q2',
+  }))
+  const [q1, q2] = h.state.created
+  let current = { 'session-1': 'q1', 'session-2': 'q2' }
+  const readPending = (id) => current[id] ?? null
+
+  // 待交互还在，谁都不该被撤。
+  assert.equal(h.sink.dismissStaleAnswers(readPending), 0)
+  assert.equal(q1.closed, false)
+  assert.equal(q2.closed, false)
+
+  // session-1 已经回答：key 消失。
+  current = { 'session-2': 'q2' }
+  assert.equal(h.sink.dismissStaleAnswers(readPending), 1)
+  assert.equal(q1.closed, true)
+  assert.equal(q2.closed, false)
+
+  // session-2 换成了新问题：旧催办过期。
+  current = { 'session-2': 'q9' }
+  assert.equal(h.sink.dismissStaleAnswers(readPending), 1)
+  assert.equal(q2.closed, true)
+  assert.deepEqual(h.sink.getLive(), [])
+})
+
+test('撤回只处理「需要你回应」：完成通知与判断不了的情况都保留', () => {
+  const h = harness()
+  globalThis.Notification = fakeNotification(h.state)
+  h.sink.show(notification({ category: 'completed', dedupeKey: 'completed:12' }))
+  h.sink.show(notification({
+    sessionId: 'session-2', category: 'answer', dedupeKey: 'answer:q1', pendingKey: 'q1',
+  }))
+  const [completed, answer] = h.state.created
+
+  // 非 answer 没有 pendingKey，不会被这条路径撤掉；undefined 表示「此刻判断不了」，也保留。
+  assert.equal(h.sink.dismissStaleAnswers(() => undefined), 0)
+  assert.equal(completed.closed, false)
+  assert.equal(answer.closed, false)
+})
+
+test('测试通知不登记；用户关闭后登记项自动移除', () => {
+  const h = harness()
+  globalThis.Notification = fakeNotification(h.state)
+  h.sink.show(notification({ dedupeKey: 'test:1', category: 'answer', dismissible: false }))
+  assert.deepEqual(h.sink.getLive(), [])
+  assert.equal(h.sink.dismissSession('session-1'), 0)
+
+  h.sink.show(notification({ dedupeKey: 'completed:2' }))
+  h.state.created.at(-1).onclose()
+  assert.deepEqual(h.sink.getLive(), [], '用户自己关掉后不再需要登记')
+})
+
+test('登记表有上限，超出后丢弃最旧引用但不去关它', () => {
+  const h = harness()
+  globalThis.Notification = fakeNotification(h.state)
+  for (let index = 0; index < MAX_LIVE_TOASTS + 5; index += 1) {
+    h.sink.show(notification({ dedupeKey: `bulk-${index}` }))
+  }
+  assert.equal(h.sink.getLive().length, MAX_LIVE_TOASTS)
+  assert.equal(h.state.created[0].closed, false, '淘汰只丢引用，不主动关闭旧通知')
 })
 
 test('首次成功弹出会预热一次宿主半，之后不重复', () => {

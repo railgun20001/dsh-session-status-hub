@@ -14,6 +14,9 @@
  * 3. **落地日志**：桌面端渲染进程的控制台平时没人看，而「通知没弹」是现场过去之后才被
  *    发现的故障。把权限、构造结果、`show` / `failed` / `no-event` 留在 localStorage 里，
  *    事后能判断是插件没发、Electron 没交给系统，还是系统没显示。
+ * 4. **撤回过期通知**：Windows 的 toast 一旦弹出，插件不主动 `close()` 它就会一直留在屏幕上
+ *    （`requireInteraction` 的「需要你回应」）或操作中心里。本层登记还活着的通知，供调用方
+ *    在「用户已经看了这个会话」或「待交互已经处理」时撤掉；不登记就只能等它自己消失。
  *
  * @module dsh-session-status-hub/hub-notify
  */
@@ -23,6 +26,15 @@ export const CROSS_TAB_WINDOW_MS = 4000
 
 /** 通知结果诊断日志保留条数（环形，只留最近若干条）。 */
 export const NOTIFY_LOG_LIMIT = 20
+
+/**
+ * 登记表最多保留多少条仍然活着的通知。
+ *
+ * 单个页面开着几天不关时，通知会一直累积；每条都要留一个 `Notification` 引用来支持
+ * 「之后打开会话再撤回」。超过上限时只丢弃**最旧记录的引用**（不调用 `close()`，那条
+ * 通知本来也早就沉到操作中心底部了），避免登记表无界增长。
+ */
+export const MAX_LIVE_TOASTS = 100
 
 /**
  * 等待通知回执事件的上限（毫秒）。
@@ -98,6 +110,9 @@ export function shortToastTag(identity) {
  * @param {() => number} [options.now] 当前时间（测试注入）。
  * @returns {{
  *   show: (notification: object) => void,
+ *   dismissSession: (sessionId: string) => number,
+ *   dismissStaleAnswers: (currentPendingKeyOf: (sessionId: string) => (string|null|undefined)) => number,
+ *   getLive: () => Array<object>,
  *   getLog: () => Array<object>,
  *   clearLog: () => Array<object>,
  * }} 落地器。
@@ -114,6 +129,72 @@ export function createNotifySink({
 }) {
   /** 预热只发一次：通知一弹出就去让宿主半把 PowerShell 编译好。 */
   let warmedUp = false
+
+  /**
+   * 仍然挂在系统里的通知：短 tag → 登记项。
+   *
+   * 保留 `toast` 引用是「之后还能撤掉」的唯一前提：`Notification` 对象一旦被回收，
+   * 就没法再对 Windows 里那条 toast 调 `close()`。登记项在点击、用户手动关闭、系统拒绝
+   * 或调用方主动撤回时移除；`MAX_LIVE_TOASTS` 兜住极端情况下（`close` 事件不派发）的增长。
+   * @type {Map<string, { toast: object, sessionId: string, category: string, dedupeKey: string, pendingKey: string|null }>}
+   */
+  const liveToasts = new Map()
+
+  /**
+   * 把一条仍然活着的通知从登记表里移除（只丢引用，不关闭）。
+   * @param {string} tag 通知的短 tag。
+   * @returns {void}
+   */
+  const forgetLive = (tag) => {
+    liveToasts.delete(tag)
+  }
+
+  /**
+   * 关闭并移除一条仍然活着的通知。
+   *
+   * Windows 上 `close()` 会同时把 toast 从屏幕和操作中心删除（Electron 文档语义）；
+   * 关闭失败只告警——调用方（打开会话 / 待交互消失）绝不能被通知清理拖垮。
+   * @param {string} tag 通知的短 tag。
+   * @returns {boolean} 登记表里确实有这条通知并尝试了关闭。
+   */
+  const closeLive = (tag) => {
+    const entry = liveToasts.get(tag)
+    if (entry === undefined) return false
+    liveToasts.delete(tag)
+    try {
+      entry.toast.close()
+    } catch (error) {
+      console.warn(`[${pluginId}] 关闭通知失败`, error)
+    }
+    return true
+  }
+
+  /**
+   * 登记一条刚构造成功的通知，并裁掉过旧的引用。
+   * @param {string} tag 通知的短 tag。
+   * @param {object} toast 通知对象。
+   * @param {object} notification 引擎产出的通知描述。
+   * @returns {void}
+   */
+  const rememberLive = (tag, toast, notification) => {
+    // 同一个 tag 再次出现（去重窗口过期后的重复事件）：旧对象只丢引用、不关闭。
+    // 平台侧同 tag 的通知已经被新 toast 替换，这时再 close 旧对象有可能把新弹窗一起关掉。
+    forgetLive(tag)
+    liveToasts.set(tag, {
+      toast,
+      sessionId: String(notification.sessionId),
+      category: String(notification.category ?? ''),
+      dedupeKey: String(notification.dedupeKey ?? ''),
+      pendingKey: typeof notification.pendingKey === 'string' && notification.pendingKey !== ''
+        ? notification.pendingKey
+        : null,
+    })
+    while (liveToasts.size > MAX_LIVE_TOASTS) {
+      const oldest = liveToasts.keys().next().value
+      if (oldest === undefined) break
+      liveToasts.delete(oldest)
+    }
+  }
 
   /**
    * 跨标签页去重：同一事件在多个页面里只会有一个页面真的弹通知。
@@ -162,8 +243,12 @@ export function createNotifySink({
   }
 
   /**
-   * 弹一条系统通知。
+   * 弹一条系统通知，并把它登记为「之后可以撤回」。
+   *
    * @param {object} notification 引擎产出的通知描述。
+   * @param {string} [notification.pendingKey] 「需要你回应」对应的待交互 key；其他类别为空。
+   * @param {boolean} [notification.dismissible] 传 `false` 表示只弹不登记（测试通知用，
+   *   否则窗口正看着当前会话时会被下一次观察立刻当成「已读」撤掉）。
    * @returns {void}
    */
   const show = (notification) => {
@@ -232,6 +317,11 @@ export function createNotifySink({
       return
     }
 
+    // 登记这条通知：用户打开会话 / 回应待交互时要靠这里的引用把它从系统里撤掉。
+    // 测试通知不登记（`dismissible: false`），否则「正在看当前会话」的下一次观察会把它
+    // 当成已读立刻撤掉，人工验证通路时反而看不到弹窗。
+    if (notification.dismissible !== false) rememberLive(tag, toast, notification)
+
     // 结果诊断：`shown` 表示浏览器确认已显示；`failed` 表示浏览器/系统明确拒绝；
     // `no-event` 表示 2.5 秒内什么事件都没来——**只是「未确认」**。要确认「到底到没到
     // 系统」，最终还得看 Windows 的
@@ -245,6 +335,8 @@ export function createNotifySink({
     const settle = (stage, detail) => {
       if (settled) return
       settled = true
+      // 系统明确拒绝 = 这条通知根本不在屏幕上，留着引用也撤不掉任何东西。
+      if (stage === 'failed') forgetLive(tag)
       record({ ...base, tag, stage, detail })
     }
     const onShown = () => settle('shown')
@@ -286,6 +378,8 @@ export function createNotifySink({
     const onClick = () => {
       if (clicked) return
       clicked = true
+      // 用户点了它：这条通知已经完成使命，不需要再登记为「可以撤回」。
+      forgetLive(tag)
       try {
         toast.close()
       } catch {
@@ -294,13 +388,73 @@ export function createNotifySink({
       // 窗口已经在前台时不需要再前置（也就不会触碰窗口状态）；后台/最小化时才请求。
       openSession(notification.sessionId, { raise: !isFocused() })
     }
+    /** 用户自己关掉（或系统替用户关掉）时，登记项也要跟着消失。 */
+    const onClosed = () => forgetLive(tag)
     toast.onclick = onClick
     subscribe('click', onClick)
-    toast.onclose = () => {}
+    toast.onclose = onClosed
+    subscribe('close', onClosed)
   }
 
   return {
     show,
+    /**
+     * 撤掉某个会话仍然挂在系统里的全部通知。
+     *
+     * 触发时机：用户点了通知 / 状态栏 chip / 在侧栏切到这个会话（`openSession`），
+     * 或者窗口在前台、正在看这个会话（每次观察）。Windows 上会把 toast 从屏幕上
+     * 和操作中心里一起删除。
+     * @param {string} sessionId 会话 id。
+     * @returns {number} 实际撤掉的条数。
+     */
+    dismissSession: (sessionId) => {
+      if (typeof sessionId !== 'string' || sessionId === '') return 0
+      let closed = 0
+      // 复制一份键：`closeLive` 会在遍历中删除当前项。
+      for (const tag of [...liveToasts.keys()]) {
+        if (liveToasts.get(tag)?.sessionId !== sessionId) continue
+        if (closeLive(tag)) closed += 1
+      }
+      return closed
+    },
+    /**
+     * 撤掉已经过期的「需要你回应」通知。
+     *
+     * 判定只看事实：登记时捕获的 `pendingKey` 与「这个会话现在的待交互 key」不一致
+     * （key 消失 = 用户已经回答 / 批准；换成新 key = 旧问题已经过去），那条催办就过期了。
+     * `currentPendingKeyOf` 返回 `undefined` 表示「此刻判断不了」，按保留处理——宁可多留
+     * 一会儿，也不要把还在等你回应的通知撤掉。测试通知没有 `pendingKey`，永不在此被撤。
+     * @param {(sessionId: string) => (string|null|undefined)} currentPendingKeyOf 读取会话当前待交互 key。
+     * @returns {number} 实际撤掉的条数。
+     */
+    dismissStaleAnswers: (currentPendingKeyOf) => {
+      if (typeof currentPendingKeyOf !== 'function') return 0
+      let closed = 0
+      for (const tag of [...liveToasts.keys()]) {
+        const entry = liveToasts.get(tag)
+        if (entry === undefined || entry.pendingKey === null) continue
+        let current
+        try {
+          current = currentPendingKeyOf(entry.sessionId)
+        } catch {
+          continue
+        }
+        if (current === undefined || current === entry.pendingKey) continue
+        if (closeLive(tag)) closed += 1
+      }
+      return closed
+    },
+    /**
+     * 仍然登记在案、还能被撤回的通知（排障用）。
+     * @returns {Array<{ sessionId: string, category: string, dedupeKey: string, pendingKey: string|null }>}
+     *   当前活着的通知（不含内部 `toast` 引用）。
+     */
+    getLive: () => [...liveToasts.values()].map(({ sessionId, category, dedupeKey, pendingKey }) => ({
+      sessionId,
+      category,
+      dedupeKey,
+      pendingKey,
+    })),
     /**
      * 最近若干条通知的落地结果（排障用）。
      *

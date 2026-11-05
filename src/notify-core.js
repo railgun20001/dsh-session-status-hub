@@ -364,6 +364,10 @@ export function planNotifications(input) {
     notifications.push({
       sessionId: id,
       dedupeKey: candidate.dedupeKey,
+      // 「需要你回应」通知携带它所对应的待交互 key：用户回答 / 批准后（该 key 消失或换成
+      // 新的），客户端半据此把仍然常驻在系统通知中心里的那条提醒撤掉（见 hub-notify 的
+      // `dismissStaleAnswers`）。其他类别没有对应关系，固定为 null。
+      pendingKey: candidate.category === 'answer' ? (candidate.pending?.key ?? null) : null,
       ...describeNotification({
         category: candidate.category,
         title: titleOf(row),

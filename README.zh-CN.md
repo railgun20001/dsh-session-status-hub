@@ -190,6 +190,15 @@
 （`dsh` + 12 位十六进制哈希 = 15 个字符，取自 `<插件>:<会话 id>#<事件键>`）。
 多标签页共享 `localStorage` 时同一事件只弹一条。
 
+**通知会跟着「看过 / 回过」消失**：每条弹出成功的通知都登记在客户端半（`hub-notify`），
+打开这个会话（点通知、点状态栏 chip、或直接在侧栏切过去）就立即 `close()`——Windows 上
+会同时从屏幕和操作中心移除；「需要你回应」的通知还额外盯着 `pendingInteraction`：你
+回答 / 批准之后（key 消失或换成新问题），那条黄色常驻弹窗会被自动撤掉，不会留在桌面上。
+`testNotification()` 弹的测试通知不参与这套自动撤回，方便人工验证通路。
+
+> 为什么必须自己撤：Windows 的 toast 不调用 `close()` 就会一直留在操作中心；
+> `requireInteraction` 的「需要你回应」更是会一直停在屏幕上。
+
 ### 通知上的颜色标识
 
 标题前带一个彩色圆点，与状态栏 chip、任务栏状态点**同源同色**，扫一眼就知道是哪一类：
@@ -299,13 +308,13 @@ plugins/dsh-session-status-hub/
 │   ├── hub-scroll.js        侧栏会话行定位、滚动与揭示控制器（可单测）
 │   ├── hub-json-store.js    localStorage JSON 读写（读失败回落、写失败只告警）
 │   ├── hub-stores.js        配置 / 水位 / 报错确认 / 后台完成记账
-│   ├── hub-notify.js        通知落地：短 tag、跨标签页去重、落地诊断日志
+│   ├── hub-notify.js        通知落地：短 tag、跨标签页去重、过期通知撤回、落地诊断日志
 │   ├── hub-host.js          宿主半路由：前置窗口 / 任务栏状态 / 在线探活
 │   ├── hub-ui.js            React 状态栏与行悬停提示组件
 │   ├── hub-slots.js         三处插槽注册
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    138 个用例（node:test，零依赖）
+├── test/                    146 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -412,7 +421,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 138 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 146 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
@@ -429,6 +438,7 @@ __DSH_SESSION_HUB__.clearLocalUnread() // 手动清掉全部补记（绿灯随�
 __DSH_SESSION_HUB__.setTaskbarState('red')    // 手动试任务栏红点（排障）
 __DSH_SESSION_HUB__.setTaskbarState('none')   // 清掉
 __DSH_SESSION_HUB__.testNotification() // 弹一条测试通知，点它应跳回当前会话
+__DSH_SESSION_HUB__.getLiveNotifications() // 仍然挂在系统里、可被自动撤回的通知（打开会话 / 回应后应消失）
 __DSH_SESSION_HUB__.getNotifyLog()      // 最近 20 条通知的落地结果（shown / failed / no-event / permission / deduped）
 __DSH_SESSION_HUB__.clearNotifyLog()    // 清空落地日志
 __DSH_SESSION_HUB__.revealSessionRow('session-…') // 'session' / 'workspace' / null：验证左侧列表能滚到该会话行（不跳转）

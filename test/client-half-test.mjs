@@ -592,6 +592,71 @@ test('待回答 / 待审批弹常驻通知', async () => {
   }
 })
 
+test('回答完待交互后，常驻的「需要你回应」通知自动撤回', async () => {
+  const harness = await createHarness({ sessions: [sessionRow('s1')] })
+  try {
+    await settle()
+    harness.setStatus('s1', { running: true, pendingInteraction: { key: 'q1', kind: 'question', sessionId: 's1' } })
+    await settle()
+    assert.equal(harness.state.notifications.length, 1)
+    const toast = harness.state.notifications[0]
+    assert.equal(toast.closed, false)
+
+    // 用户回答完：待交互消失。窗口此刻即使没有焦点（比如刚切走），通知也不该留着——
+    // 它催办的「问题」已经不存在了。
+    globalThis.document.hasFocus = () => false
+    harness.setStatus('s1', { running: false })
+    await settle()
+
+    assert.equal(toast.closed, true, '原因消失后不应把黄色常驻通知留在屏幕上')
+    assert.deepEqual(globalThis.__DSH_SESSION_HUB__.getLiveNotifications(), [])
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('打开某个会话后撤回它的系统通知，其他会话仍保留', async () => {
+  const harness = await createHarness({ sessions: [sessionRow('s1'), sessionRow('s2')] })
+  try {
+    await settle()
+    harness.setStatus('s1', { running: true, pendingInteraction: { key: 'q1', kind: 'question', sessionId: 's1' } })
+    harness.setStatus('s2', { running: true, pendingInteraction: { key: 'q2', kind: 'question', sessionId: 's2' } })
+    await settle()
+    assert.equal(harness.state.notifications.length, 2)
+    const [first, second] = harness.state.notifications
+
+    // 用户在侧栏点开 s1：它成为主视图，窗口聚焦 → 已读。
+    harness.setRow('s1', { retainedBy: { mainView: 1 } })
+    await settle()
+
+    assert.equal(first.closed, true, '打开会话即视为已读，通知应撤掉')
+    assert.equal(second.closed, false, '别的会话的通知不能被误撤')
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('测试通知不会被「正在看当前会话」自动撤回（人工验证通路时要看得到）', async () => {
+  const harness = await createHarness({
+    sessions: [sessionRow('s1', { retainedBy: { mainView: 1 } })],
+  })
+  try {
+    await settle()
+    const api = globalThis.__DSH_SESSION_HUB__
+    assert.equal(api.testNotification('s1'), true)
+    api.tick()
+    await settle()
+
+    assert.equal(harness.state.notifications.length, 1)
+    assert.equal(harness.state.notifications[0].closed, false)
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
 test('运行中的活动不会弹通知（这正是旧插件「无问答也提示」的来源）', async () => {
   const harness = await createHarness({
     sessions: [sessionRow('s1')],

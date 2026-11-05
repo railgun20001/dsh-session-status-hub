@@ -10,6 +10,7 @@ A missing "how are all my Sessions doing right now?" surface for [DeepSeek Harne
   One click jumps straight to that Session.
 - **Windows notifications** when a Session changes state (finished / failed / needs an
   answer), where clicking the toast reopens the Session and brings the DSH window forward.
+  A toast clears itself as soon as you open that Session or answer the pending question.
 - **Taskbar status dot** on the DSH taskbar button (red / yellow / green, priority
   `red > yellow > green`), via `ITaskbarList3.SetOverlayIcon` — visible while the window is
   minimized or buried behind other apps, including when the conversation you are *looking
@@ -183,7 +184,7 @@ state facts ("this turn finished and you haven't looked"), not interruptions.
 ## Diagnostics
 
 ```powershell
-npm run check     # 1) lib/client.js matches src/  2) 138 test cases
+npm run check     # 1) lib/client.js matches src/  2) 146 test cases
 ```
 
 ```js
@@ -192,6 +193,7 @@ __DSH_SESSION_HUB__.getRows()            // current rail rows
 __DSH_SESSION_HUB__.getTaskbarState()    // red / yellow / green / none
 __DSH_SESSION_HUB__.getLocalUnread()     // plugin-side "finished in background, unseen" records
 __DSH_SESSION_HUB__.testNotification()   // fire a test toast; clicking it should jump back
+__DSH_SESSION_HUB__.getLiveNotifications() // toasts still on screen / in Action Center that auto-dismissal can clear
 __DSH_SESSION_HUB__.getNotifyLog()       // last 20 notification landing results
 __DSH_SESSION_HUB__.pingHost()           // 'present' / 'absent' / 'unknown'
 ```
@@ -222,13 +224,13 @@ dsh-session-status-hub/
 ├── src/hub-scroll.js        sidebar row reveal/scroll + reveal controller (unit-testable)
 ├── src/hub-json-store.js    localStorage JSON read/write (fallback on read, warn on write)
 ├── src/hub-stores.js        config / watermarks / error acks / background-completion records
-├── src/hub-notify.js        notification landing: short tag, cross-tab dedupe, landing log
+├── src/hub-notify.js        notification landing: short tag, cross-tab dedupe, stale-toast dismissal, landing log
 ├── src/hub-host.js          host-half routes: raise window / taskbar state / liveness probe
 ├── src/hub-ui.js            React rail + row hint components
 ├── src/hub-slots.js         slot registration
 ├── src/client-main.js       wiring: services → model → notifications / rail / taskbar
 ├── build/bundle.mjs         inlines src/ in order into one classic-script bundle
-├── test/                    138 node:test cases, zero dependencies
+├── test/                    146 node:test cases, zero dependencies
 ├── locale/{zh,en}.json      plugin manager title and description
 ├── icon.svg                 plugin icon
 ├── cordis.patch.yml         bundle patch inserting the session-hub row

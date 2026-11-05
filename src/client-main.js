@@ -110,6 +110,21 @@ function projectStatuses(statusSnapshot) {
 }
 
 /**
+ * 读取某个会话当前的待交互 key。
+ *
+ * 与通知引擎同口径：非对象 / 空 key 都算「没有待交互」。用来判断一条「需要你回应」
+ * 通知是不是已经过期（用户已经回答 / 批准，或者话题换成了新的问题）。
+ * @param {object} statuses 按 id 索引的统一状态。
+ * @param {string} sessionId 会话 id。
+ * @returns {string|null} 待交互 key；没有时为 null。
+ */
+function pendingInteractionKeyOf(statuses, sessionId) {
+  const pending = statuses?.[sessionId]?.pendingInteraction
+  if (pending === null || typeof pending !== 'object') return null
+  return typeof pending.key === 'string' && pending.key !== '' ? pending.key : null
+}
+
+/**
  * 判断当前页面是否是 DSH 桌面端外壳（只有那里才有任务栏图标可标记）。
  * @returns {boolean} 是否桌面端。
  */
@@ -186,13 +201,14 @@ function apply(ctx) {
   /**
    * 打开一个会话（状态栏条目 / 通知点击的落点）。
    *
-   * 四件事，按重要性排序：
+   * 五件事，按重要性排序：
    *   1. 在应用内跳转到该会话（受支持通道，必然生效）；
    *   2. 把左侧会话列表也滚动到该会话行（官方 openSession 不会滚）；
-   *   3. 请求宿主半把桌面窗口提到前台（渲染进程自己做不到）；
-   *   4. `window.focus()` 兜底（受 Blink 手势门控，可能无效，但零成本）。
+   *   3. 撤掉这个会话仍然挂在系统里的通知（打开即视为已读，不能让它继续留在屏幕上）；
+   *   4. 请求宿主半把桌面窗口提到前台（渲染进程自己做不到）；
+   *   5. `window.focus()` 兜底（受 Blink 手势门控，可能无效，但零成本）。
    *
-   * `options.raise === false` 时跳过第 3 步：**点击状态栏 chip 时窗口本来就在前台**，
+   * `options.raise === false` 时跳过第 4 步：**点击状态栏 chip 时窗口本来就在前台**，
    * 再走一次窗口前置毫无收益，反而会经过 Win32 的窗口状态处理（历史实现里的
    * SW_RESTORE 会把最大化窗口打回普通尺寸）。chip 点击只做应用内跳转。
    * @param {string} sessionId 目标会话。
@@ -223,6 +239,9 @@ function apply(ctx) {
     // 用户主动跳转（点通知 / 点 chip）= 已经去看这个会话了：清掉「后台完成」记账，
     // 绿点与任务栏绿灯随之熄灭。这条路径不依赖窗口此刻是否已经获得焦点。
     if (stores.clearLocalUnread(sessionId)) scheduleTick()
+    // 同理，这个会话的系统通知也已经「看过了」：立即从屏幕 / 操作中心撤掉。
+    // 通知点击自身已在 onclick 里 close 过，这里对同一会话的其他残留通知一并收尾。
+    notifySink.dismissSession(sessionId)
     if (options.raise !== false) host.callHostRoute('raise')
     focusWindowBestEffort()
   }
@@ -263,6 +282,9 @@ function apply(ctx) {
       if (listState === undefined || listState === null) return
       const statusSnapshot = uiSession.sessionStatus?.getSnapshot?.()
       const statuses = projectStatuses(statusSnapshot)
+      // 状态快照没拿到时不能据此判断「待交互已经消失」，否则会把还在等你的通知误撤掉。
+      const statusKnown = statusSnapshot instanceof Map
+        || (statusSnapshot !== null && typeof statusSnapshot === 'object')
 
       // 一次观察里只判定一次「窗口在不在前台」：状态栏、通知、待查看记账必须同源，
       // 否则会在同一帧里得出互相矛盾的结论。
@@ -319,7 +341,17 @@ function apply(ctx) {
       // 4) 任务栏：红 > 黄 > 绿 > 无。
       host.pushTaskbar(aggregateTaskbarState(rows))
 
-      // 5) 弹通知。
+      // 5) 撤掉已经不需要再提醒的系统通知：
+      //    - 窗口在前台且正在看这个会话 → 这条会话的通知都算已经看过；
+      //    - 「需要你回应」的待交互已经消失 / 换成新 key → 旧催办过期。
+      //    必须先撤旧再弹新：同一帧里 q1 → q2 时，不能让旧催办和新问题一起留在屏幕上。
+      const dismissed = (focused && currentSessionId !== undefined ? notifySink.dismissSession(currentSessionId) : 0)
+        + (statusKnown
+          ? notifySink.dismissStaleAnswers((sessionId) => pendingInteractionKeyOf(statuses, sessionId))
+          : 0)
+      if (dismissed > 0) console.debug(`[${PLUGIN_ID}] 已撤回 ${dismissed} 条过期通知`)
+
+      // 6) 弹通知。
       if (result.notes.length > 0) {
         console.debug(`[${PLUGIN_ID}]`, result.notes)
       }
@@ -540,6 +572,9 @@ function apply(ctx) {
         // 借用 `answer` 只是为了常驻（`requireInteraction`）；标识用铃铛而不是黄点，
         // 免得一条测试通知被看成「真的在等你回应」。
         category: 'answer',
+        // 测试通知不登记为「可自动撤回」：它没有对应的待交互，也不该在窗口正看着
+        // 当前会话时被下一次观察当成已读立刻撤掉。
+        dismissible: false,
         marker: NOTIFY_MARKERS.test,
         title: 'DSH · 通知测试',
         body: '点击这条通知应当跳回对应会话',
@@ -564,6 +599,11 @@ function apply(ctx) {
       /** 宿主半在线状态（由 /ping 判定，与「有没有投影值」无关）。 */
       hostHalf: host.hostHalfState(),
     }),
+    /**
+     * 仍然挂在系统里、之后可以被自动撤回的通知（排障用）。
+     * @returns {Array<object>} 见 hub-notify 的 `getLive`。
+     */
+    getLiveNotifications: () => notifySink.getLive(),
     /** @returns {Array<object>} 最近的通知落地结果（见 hub-notify 的 getLog）。 */
     getNotifyLog: () => notifySink.getLog(),
     /** 清空通知诊断日志（排障用）。 */
