@@ -79,7 +79,7 @@ test('四类状态都能推导出来', () => {
   ])
 })
 
-test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 灰（未开始）> 蓝（运行中）', () => {
+test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）> 灰（未开始）', () => {
   const list = listOf([
     row('running', { running: true, updatedAt: 400 }),
     row('unread', { updatedAt: 300 }),
@@ -94,10 +94,10 @@ test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）>
   assert.deepEqual(deriveHubRows({ list, statuses }).map((item) => item.id), [
     'error', 'answer', 'unread', 'running',
   ])
-  assert.deepEqual(STATE_ORDER, { error: 0, answer: 1, unread: 2, draft: 3, running: 4 })
+  assert.deepEqual(STATE_ORDER, { error: 0, answer: 1, unread: 2, running: 3, draft: 4 })
 })
 
-test('未发送草稿归为「未开始」，显示在待查看之后、运行中之前', () => {
+test('未发送草稿归为「未开始」，显示在所有状态之后（运行中之后）', () => {
   const list = listOf([
     row('draft', { updatedAt: 100 }),
     row('running', { running: true, updatedAt: 400 }),
@@ -122,8 +122,8 @@ test('未发送草稿归为「未开始」，显示在待查看之后、运行�
     ['error', 'error'],
     ['answer', 'answer'],
     ['unread', 'unread'],
-    ['draft', 'draft'],
     ['running', 'running'],
+    ['draft', 'draft'],
   ])
 })
 

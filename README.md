@@ -6,7 +6,7 @@
 A missing "how are all my Sessions doing right now?" surface for [DeepSeek Harness](https://github.com/deepseek-ai):
 
 - **A rail in the top title bar** listing the Sessions that need you, ordered by
-  `red (failed) > yellow (waiting for your answer) > green (unread) > gray (not started) > blue (running)`.
+  `red (failed) > yellow (waiting for your answer) > green (unread) > blue (running) > gray (not started)`.
   A Session with an unsent draft in its composer shows up as a gray "Not started" chip.
   One click jumps straight to that Session.
 - **Windows notifications** when a Session changes state (finished / failed / needs an
@@ -29,7 +29,7 @@ is waiting for my answer?**
 **A: install `dsh-session-status-hub`.** It does three things:
 
 1. **A rail in the title bar**, ordered
-   `red (failed) > yellow (waiting for you) > green (unread) > gray (not started) > blue (running)`.
+   `red (failed) > yellow (waiting for you) > green (unread) > blue (running) > gray (not started)`.
    The 3 chips shown by default are always the 3 that need you most; one click jumps to that
    Session. A Session whose composer holds an unsent draft appears as a gray "Not started" chip.
 2. **A taskbar status dot** via `ITaskbarList3.SetOverlayIcon` — red / yellow / green on the
@@ -63,14 +63,13 @@ What it deliberately does *not* do:
 | **failed** `error` | `hubTurnOutcome.outcome ∈ error / interrupted`, not yet acknowledged | 🔴 + 报错 | red (highest) |
 | **waiting** `answer` | `pendingInteraction.kind ∈ approval / plan-review / question` | 🟡 + 等待回答 | yellow |
 | **unread** `unread` | `completionUnread === true`, or the plugin's own "finished in background" record | 🟢 + 待查看 | green |
-| **not started** `draft` | non-blank `draft.text` in `localStorage["dsh.conversation.<sessionId>"]` (the composer draft persisted by ui-conversation) | ⚪ + 未开始 | **no dot** |
 | **running** `running` | `sessionStatus.running`, or the Session row's `running` | 🔵 + 运行中 | **no dot** |
+| **not started** `draft` | non-blank `draft.text` in `localStorage["dsh.conversation.<sessionId>"]` (the composer draft persisted by ui-conversation) | ⚪ + 未开始 | **no dot** |
 
-- Chip order is the colour order (red > yellow > green > gray > blue); within a state, most
-  recently updated first. The 3 chips shown by default are therefore always the 3 that
-  most need you. Gray sits before blue on purpose: an unfinished draft is your own unfinished
-  thought, while a running Session is background work that needs nothing from you yet — putting
-  drafts last would let running Sessions fill the default 3 and hide them.
+- Chip order is the colour order (red > yellow > green > blue > gray); within a state, most
+  recently updated first. Gray sits last on purpose: "not started" is only a reminder and must
+  not take a top-3 slot away from failed / waiting / unread / running Sessions. When higher
+  states fill the three default slots, drafts stay behind the `+N` expander.
 - Classification order (which bucket a Session lands in) is independent of display order:
   waiting > failed > running > unread > not started. Drafts never override any of the four
   established states.
