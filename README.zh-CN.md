@@ -48,7 +48,7 @@
 | **等待回答** `answer` | `uiSession.sessionStatus.pendingInteraction.kind ∈ approval / plan-review / question` | 🟡 黄点 + 「等待回答」 | 黄（无红灯时） |
 | **待查看** `unread` | `sessionStatus.completionUnread === true`（原生「未读完成」绿点）**或**本插件补记的「后台完成」 | 🟢 绿点 + 「待查看」 | 绿（无红/黄时） |
 | **运行中** `running` | `sessionStatus.running` 或会话行 `running` | 🔵 蓝点 + 「运行中」 | **不点灯** |
-| **未开始** `draft` | `localStorage["dsh.conversation.<sessionId>"].draft.text` 去空白后非空（ui-conversation 持久化的输入框草稿） | ⚪ 灰点 + 「未开始」 | **不点灯** |
+| **未开始** `draft` | `localStorage["dsh.conversation.<sessionId>"].draft.text` 去空白后非空；当前主视图会话还读 `uiSession.current.hooks.input.draft`（ui-conversation 的实时输入草稿） | ⚪ 灰点 + 「未开始」 | **不点灯** |
 
 - **状态栏 chip 的显示顺序 = 颜色顺序：红 > 黄 > 绿 > 蓝 > 灰**（`STATE_ORDER`），同一类里更新时间新的靠前。
   最需要你介入的排最前，「未开始」草稿排在最后：它只是提醒，不挤占报错 / 等待回答 / 待查看 / 运行中的位置。
@@ -166,6 +166,13 @@ localStorage["dsh.conversation.<sessionId>"] = {
 的会话，而且会顺带创建整台输入机与 Lexical 编辑器；为了读一个「有没有草稿」的布尔值，
 代价不成比例。持久化键是 `ui-conversation` 自己读回草稿的同一份数据，页面刷新后草稿还在，
 插件也就跟着还在。
+
+**空白「新会话」的补充路径**：新会话在发出第一条消息前不一定有
+`dsh.conversation.<sessionId>` 键（实测旧数据里 40 个 blank 会话没有 conversation 键），
+所以当前主视图会话还会读 `uiSession.current.getSnapshot().hooks.input.getSnapshot().draft`
+这一实时 hook——它是 `ui-conversation` 公开提供给会话内容的输入状态，包含空白会话。
+这条路只用于当前会话，同样只取 `trim()` 后的长度；好处是清空输入框能立刻撤掉灰点，
+不用等持久化写回。`uiSession.current` 不可用的旧版本 / 测试桩会自动退回 localStorage 扫描。
 
 边界：
 
@@ -367,7 +374,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-slots.js         三处插槽注册
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    158 个用例（node:test，零依赖）
+├── test/                    159 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -474,7 +481,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 158 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 159 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
@@ -533,6 +540,8 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
 8. 在某个会话的输入框里打几个字但**不要发送** → 状态栏出现灰点「未开始」，任务栏不变；
    清空输入框或发送后灰点消失；刷新页面（`Ctrl+R`）后如果草稿还在，灰点也应重新出现。
    控制台 `__DSH_SESSION_HUB__.getDrafts()` 只应看到 `{ chars }`，不应出现草稿正文。
+9. 在工作区里点「新对话」进入空白会话，直接输入几个字但**不要发送** →
+   状态栏出现灰色「未开始：新会话」chip；清空输入框后应立即消失。
 
 ---
 

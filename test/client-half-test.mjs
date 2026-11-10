@@ -210,7 +210,19 @@ async function createHarness(boot = {}) {
 
   const listStore = makeStore(listState)
   const statusStore = makeStore(new Map(Object.entries(statuses)))
-  const services = { sessions: { list: listStore }, uiSession: { sessionStatus: statusStore } }
+  // 当前主视图的实时输入 hook：与真实 ui-session 一样，空白新会话没有 localStorage
+  // 草稿键时也能从这里读到输入框内容。
+  const liveCurrent = { sessionId: undefined, draft: '' }
+  const currentStore = {
+    getSnapshot: () => liveCurrent.sessionId === undefined ? {} : {
+      key: liveCurrent.sessionId,
+      hooks: { input: { getSnapshot: () => ({ draft: liveCurrent.draft }) } },
+    },
+  }
+  const services = {
+    sessions: { list: listStore },
+    uiSession: { sessionStatus: statusStore, current: currentStore },
+  }
 
   const effectDisposers = []
   const ctx = {
@@ -251,6 +263,11 @@ async function createHarness(boot = {}) {
     /** 派发一个 document 事件（草稿输入监听用）。 */
     fireDocument: (type) => {
       for (const fn of docListeners.get(type) ?? []) fn({ type })
+    },
+    /** 模拟当前主视图输入框的实时草稿（uiSession.current → hooks.input）。 */
+    setLiveDraft: (sessionId, draft) => {
+      liveCurrent.sessionId = sessionId
+      liveCurrent.draft = draft
     },
     /** 全部 effect 清理。 */
     dispose: () => {
@@ -357,6 +374,33 @@ test('输入框有未发送草稿时出现「未开始」，清空后消失', as
     assert.equal(JSON.stringify(globalThis.__DSH_SESSION_HUB__.getDrafts()).includes('还没发出去'), false)
 
     harness.state.storage.delete('dsh.conversation.s1')
+    globalThis.__DSH_SESSION_HUB__.tick()
+    await settle()
+    assert.deepEqual(globalThis.__DSH_SESSION_HUB__.getRows(), [])
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('空白新会话从实时 input hook 读取草稿，不依赖 localStorage 键', async () => {
+  const harness = await createHarness({ sessions: [sessionRow('blank', { blank: true })] })
+  try {
+    await settle()
+    assert.deepEqual(globalThis.__DSH_SESSION_HUB__.getRows(), [])
+
+    // 空白「新会话」在发出第一条消息前不一定有 dsh.conversation.<id> 键；
+    // uiSession.current 的 input hook 是实时来源。
+    harness.setLiveDraft('blank', '新对话草稿')
+    globalThis.__DSH_SESSION_HUB__.tick()
+    await settle()
+
+    const rows = globalThis.__DSH_SESSION_HUB__.getRows()
+    assert.deepEqual(rows.map((item) => [item.id, item.state, item.title]), [['blank', 'draft', '新会话']])
+    assert.deepEqual(globalThis.__DSH_SESSION_HUB__.getDrafts(), { blank: { chars: 5 } })
+
+    // 清空实时草稿后立即撤掉，不等待持久化写回。
+    harness.setLiveDraft('blank', '   ')
     globalThis.__DSH_SESSION_HUB__.tick()
     await settle()
     assert.deepEqual(globalThis.__DSH_SESSION_HUB__.getRows(), [])

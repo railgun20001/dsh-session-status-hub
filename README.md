@@ -64,7 +64,7 @@ What it deliberately does *not* do:
 | **waiting** `answer` | `pendingInteraction.kind ∈ approval / plan-review / question` | 🟡 + 等待回答 | yellow |
 | **unread** `unread` | `completionUnread === true`, or the plugin's own "finished in background" record | 🟢 + 待查看 | green |
 | **running** `running` | `sessionStatus.running`, or the Session row's `running` | 🔵 + 运行中 | **no dot** |
-| **not started** `draft` | non-blank `draft.text` in `localStorage["dsh.conversation.<sessionId>"]` (the composer draft persisted by ui-conversation) | ⚪ + 未开始 | **no dot** |
+| **not started** `draft` | non-blank `draft.text` in `localStorage["dsh.conversation.<sessionId>"]`; the current main-view Session also reads `uiSession.current.hooks.input.draft` (ui-conversation's live composer draft) | ⚪ + 未开始 | **no dot** |
 
 - Chip order is the colour order (red > yellow > green > blue > gray); within a state, most
   recently updated first. Gray sits last on purpose: "not started" is only a reminder and must
@@ -99,6 +99,14 @@ you click its notification/chip.
 `{"draft": {"text": "...", "references": [...]}}` (current). The plugin reads that key, trims
 `draft.text`, and only keeps `{ chars }` — the draft body never enters plugin state, is never
 persisted or sent anywhere, and is never rendered. Parsing never touches the DOM or the editor.
+
+A blank "new Session" may not have a `dsh.conversation.<id>` key before its first message
+(measured: 40 blank Sessions in an old store had none), so the current main-view Session also
+reads the live input hook
+`uiSession.current.getSnapshot().hooks.input.getSnapshot().draft`. That hook is what
+`ui-conversation` publishes for the composer, covers blank Sessions, and lets a cleared composer
+remove the chip immediately without waiting for persistence. Only the trimmed length is kept;
+the text is discarded.
 
 The scan runs on `input`/`compositionend` (200 ms coalescing), on cross-tab `storage` events,
 and on a 2 s poll while the page is visible; focus/visibility changes trigger one more scan.
@@ -204,7 +212,7 @@ state facts ("this turn finished and you haven't looked"), not interruptions.
 ## Diagnostics
 
 ```powershell
-npm run check     # 1) lib/client.js matches src/  2) 158 test cases
+npm run check     # 1) lib/client.js matches src/  2) 159 test cases
 ```
 
 ```js
@@ -252,7 +260,7 @@ dsh-session-status-hub/
 ├── src/hub-slots.js         slot registration
 ├── src/client-main.js       wiring: services → model → notifications / rail / taskbar
 ├── build/bundle.mjs         inlines src/ in order into one classic-script bundle
-├── test/                    158 node:test cases, zero dependencies
+├── test/                    159 node:test cases, zero dependencies
 ├── locale/{zh,en}.json      plugin manager title and description
 ├── icon.svg                 plugin icon
 ├── cordis.patch.yml         bundle patch inserting the session-hub row
