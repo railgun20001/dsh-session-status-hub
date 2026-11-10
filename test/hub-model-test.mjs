@@ -152,19 +152,26 @@ test('同一状态内按更新时间倒序，时间相同用 id 兜底', () => {
   ])
 })
 
-test('空白会话与子代理会话默认不进入状态栏', () => {
+test('空白新会话有草稿时显示为未开始，没有草稿时与子代理会话都不进状态栏', () => {
   const list = listOf([
     row('blank', { blank: true }),
     row('sub', { origin: 'subagent', running: true }),
     row('normal', { running: true }),
   ])
   assert.deepEqual(deriveHubRows({ list, statuses: new Map() }).map((item) => item.id), ['normal'])
-  // 空白占位行与子代理会话即使输入框里有草稿也不进状态栏。
-  assert.deepEqual(
-    deriveHubRows({ list, statuses: new Map(), drafts: { blank: { chars: 1 }, sub: { chars: 1 } } })
-      .map((item) => item.id),
-    ['normal'],
-  )
+  // 空白「新会话」一旦输入框里有非空草稿，就是一个真实的「未开始」会话；
+  // 子代理会话即使有草稿也不进状态栏。
+  const withDrafts = deriveHubRows({
+    list,
+    statuses: new Map(),
+    drafts: { blank: { chars: 1 }, sub: { chars: 1 } },
+    blankTitle: 'New Session',
+  })
+  assert.deepEqual(withDrafts.map((item) => [item.id, item.state]), [
+    ['normal', 'running'],
+    ['blank', 'draft'],
+  ])
+  assert.equal(withDrafts.find((item) => item.id === 'blank').title, 'New Session')
   assert.deepEqual(
     deriveHubRows({ list, statuses: new Map(), includeSubagents: true }).map((item) => item.id).sort(),
     ['normal', 'sub'],

@@ -125,7 +125,15 @@ function createSessionHubRail(React, deps, variant = 'header') {
     const localUnread = useSnapshot(deps.unread ?? EMPTY_STORE)
     // 草稿表只带 `{ chars }`（不含正文）；没有注入时退化为空表。
     const drafts = useSnapshot(deps.drafts ?? EMPTY_DRAFT_STORE)
-    const rows = deriveHubRows({ list, statuses, ackErrors, localUnread, drafts, now: Date.now() })
+    const rows = deriveHubRows({
+      list,
+      statuses,
+      ackErrors,
+      localUnread,
+      drafts,
+      blankTitle: t('blank.title'),
+      now: Date.now(),
+    })
     const [expanded, setExpanded] = React.useState(false)
     const visibleRows = expanded ? rows : rows.slice(0, 3)
     const hiddenCount = rows.length - visibleRows.length

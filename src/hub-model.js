@@ -27,6 +27,7 @@
  * 「未开始」= 输入框里有尚未发送的草稿（由客户端半从 `dsh.conversation.<id>` 读取，
  * 见 hub-drafts）。它是最弱的一类提示，排在所有状态之后：有报错 / 等待回答 / 待查看 /
  * 运行中时先显示它们，草稿只在前面的条目都排完之后才占位，避免挤掉真正需要你处理的状态。
+ * 空白「新会话」占位行只在有草稿时进入状态栏，标题统一显示 `blankTitle`（默认「新会话」）。
  *
  * 任务栏只点「需要你处理」的灯：
  *   - 有报错 → red
@@ -88,9 +89,13 @@ export const MAX_HUB_ROWS = 40
 /**
  * 取会话展示标题。
  * @param {object} row 会话列表行。
+ * @param {string} [blankTitle] 空白「新会话」占位行的标题（跟随界面语言）。
  * @returns {string} 标题；都没有时回落到 id。
  */
-export function hubTitleOf(row) {
+export function hubTitleOf(row, blankTitle = '新会话') {
+  // 空白「新会话」的 displayTitle 可能是工作区名、也可能是空串 / id；
+  // 侧栏统一显示「新会话」，状态栏跟随同一语义，避免一串原始 id。
+  if (row?.blank === true) return blankTitle
   const display = typeof row?.displayTitle === 'string' ? row.displayTitle.trim() : ''
   if (display !== '') return display
   const title = typeof row?.title === 'string' ? row.title.trim() : ''
@@ -243,6 +248,7 @@ export const normalizeLocalUnread = normalizeSeqMap
  *   「后台完成、尚未查看」会话（见 {@link hasLocalUnread}）。
  * @param {object|Set<string>|Map<string, unknown>} [input.drafts] 有未发送草稿的会话
  *   （见 {@link hasDraftContent}；正文不会传进来，只传元数据）。
+ * @param {string} [input.blankTitle] 空白「新会话」占位行的显示标题（默认「新会话」）。
  * @param {boolean} [input.includeSubagents] 是否包含子代理会话（默认 false）。
  * @param {number} [input.now] 当前时间（保留给未来排序/过期策略）。
  * @returns {Array<{id: string, title: string, state: string, pendingKind: string|null, errorSeq: number|null, updatedAt: number}>}
@@ -254,6 +260,7 @@ export function deriveHubRows({
   ackErrors = {},
   localUnread = {},
   drafts = {},
+  blankTitle = '新会话',
   includeSubagents = false,
   now = 0,
 } = {}) {
@@ -264,8 +271,12 @@ export function deriveHubRows({
 
   for (const [id, row] of Object.entries(byId)) {
     if (row === null || typeof row !== 'object') continue
-    // 空白「新会话」占位行没有内容，不进入状态栏。
-    if (row.blank === true) continue
+    // 「未开始」只代表输入框里有未发送草稿；它是最弱的一类事实，不能盖住任何既有状态。
+    // 需要先算出来：空白「新会话」占位行只有在有草稿时才值得进入状态栏。
+    const draft = hasDraftContent(drafts, id)
+    // 空白「新会话」占位行没有内容时不进入状态栏；已经打了字但还没发送时，
+    // 它就是一个真实的「未开始」会话，应当显示。
+    if (row.blank === true && !draft) continue
     // 子代理会话默认不打扰用户；一次任务会被子代理的成败淹没。
     if (row.origin === 'subagent' && !includeSubagents) continue
 
@@ -280,8 +291,6 @@ export function deriveHubRows({
     // 「待查看」有两个来源：官方 completionUnread（非主视图会话），以及本插件为
     // 「窗口不在前台时完成的当前会话」补记的记账（官方对主视图会话永远不会置位）。
     const unread = status?.completionUnread === true || hasLocalUnread(localUnread, id)
-    // 「未开始」只代表输入框里有未发送草稿；它是最弱的一类事实，不能盖住任何既有状态。
-    const draft = hasDraftContent(drafts, id)
 
     // 判定顺序（一个会话只归一类，取第一个命中的）：等待回答 > 报错 > 运行中 > 待查看 > 未开始。
     // 这与 STATE_ORDER（显示顺序 红 > 黄 > 绿 > 蓝 > 灰）是两件事：同时「等你回答」又「上一轮
@@ -296,7 +305,7 @@ export function deriveHubRows({
 
     rows.push({
       id,
-      title: hubTitleOf(row),
+      title: hubTitleOf(row, blankTitle),
       state,
       pendingKind,
       errorSeq: failed && typeof projection?.seq === 'number' ? projection.seq : null,

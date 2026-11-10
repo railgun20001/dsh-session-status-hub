@@ -10,6 +10,7 @@
  *
  * 键的命名约定：
  *   - `label` / `idle` / `aria` / `more` / `collapse`：状态栏容器自身
+ *   - `blank.title`：空白「新会话」占位行在状态栏里的标题
  *   - `state.<state>`：状态短标签，`<state>` 必须与 hub-model 的 STATE_ORDER 键一致
  *   - `row.<kind>`：会话行悬停卡片里的失败提示，`<kind>` 与 failureKindOf 的返回值一致
  *
@@ -28,6 +29,7 @@ export const HUB_STRINGS = Object.freeze({
   zh: Object.freeze({
     label: '会话',
     idle: '全部空闲',
+    'blank.title': '新会话',
     aria: '会话状态：{count} 个需要关注',
     more: '还有 {count} 个会话',
     collapse: '收起',
@@ -43,6 +45,7 @@ export const HUB_STRINGS = Object.freeze({
   en: Object.freeze({
     label: 'Sessions',
     idle: 'All idle',
+    'blank.title': 'New Session',
     aria: 'Session status: {count} need attention',
     more: '{count} more Sessions',
     collapse: 'Collapse',

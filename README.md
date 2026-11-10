@@ -76,7 +76,9 @@ What it deliberately does *not* do:
 - **Running never lights the taskbar.** Running is the normal case; lighting it would leave
   the dot permanently green and mask real red/yellow signal. It still shows as a blue
   pulsing chip. **Drafts never light the taskbar either.**
-- Blank "new session" rows and subagent Sessions (`origin: subagent`) are ignored.
+- Blank "new session" rows are ignored only while they have no draft; once the composer holds
+  unsent text they appear as "Not started". Subagent Sessions (`origin: subagent`) are still
+  ignored.
 - A "failed" chip clears when you click it or when you are looking at that Session with the
   window focused; a new failure re-lights it.
 
