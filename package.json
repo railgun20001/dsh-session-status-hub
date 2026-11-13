@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-status-hub",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "description": "DeepSeek Harness 会话状态中心：顶端状态栏汇总运行中 / 待回答 / 待查看 / 报错 / 未开始（未发送草稿）会话，状态变化弹 Windows 通知，并用红黄绿点标记任务栏图标",
   "keywords": [
@@ -70,6 +70,7 @@
     "manifestVersion": 1
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "dsh": ">=0.2.0-rc.2"
   }
 }

@@ -577,6 +577,8 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
 
 ## 10. 依赖与权限
 
+- **宿主要求**：`engines.dsh` 声明为 `>=0.2.0-rc.2`——这是本插件实际验证运行过的宿主版本，
+  不是静态推断的下限；`0.2.x` 后续版本沿用该声明，宿主换了破坏性的 API 再改这里。
 - **零 npm 依赖**：宿主半只用 `node:child_process` / `node:fs`；客户端半只用浏览器 API、
   React（由客户端模块表提供）与 DSH 服务。
 - **命名**：仓库名、npm 包名、`cordis.patch.yml` 的 `name`、`window.__ModuleLoader__` 的注册 id、

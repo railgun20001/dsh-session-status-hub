@@ -130,8 +130,10 @@ always use the app icon, so text is the only place colour can live.
 
 ## Requirements
 
-- DeepSeek Harness with the `sessionProjections`, `sessions` and `uiSession` services (any
-  recent desktop or web build).
+- DeepSeek Harness with the `sessionProjections`, `sessions` and `uiSession` services. The
+  package declares `engines.dsh: >=0.2.0-rc.2` — the host version this plugin was actually
+  verified against, not a statically derived floor; later `0.2.x` builds inherit that
+  declaration until a breaking host API change forces a new one.
 - Node.js ≥ 20 for the host half (DSH ships its own; nothing to install — the plugin has
   **zero npm dependencies**).
 - Windows 10/11 for window raising and the taskbar dot (PowerShell 5.1 + Win32). The rail,
