@@ -212,6 +212,11 @@ localStorage["dsh.conversation.<sessionId>"] = {
   `+N`），后面是「最近会话」（最多 5 个，没有状态点、用次级文字色，视觉上明显弱于状态组）；
   「最近会话」不参与 `+N` 折叠——它的上限由模型层 `MAX_RECENT_ROWS` 兜住，再折一次就失去
   「一眼看到刚才那个会话」的意义；
+- **一组标题就是开关**：`状态会话` / `最近会话` 两个组标题都是按钮，点一下整组收起（只剩标题 +
+  小号数字提示还有几条），再点一下展开；标题带一个自绘 chevron 图标，展开时朝下 `⌄`、收起时
+  旋转 90° 朝右 `›`，并带 `cursor: pointer`、hover 底色与 `focus-visible` 描边——一眼看得出手感。
+  注意它和 `+N` 是两件事：`+N` 改「显示 3 条还是全部」，组标题改「这一组还显示不显示」。
+  收起状态只存在组件内存里，刷新页面回到默认展开；
 - 默认只显示优先级最高的 3 条；还有更多时显示 `+N`，点一下展开全部，再点「收起」恢复，
   既不挤压标题，也不会把第 4 条截成半截；
 - chip 横向排列，超出宽度可横向滚动（隐藏滚动条），不挤压标题；
@@ -388,7 +393,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-slots.js         三处插槽注册
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    167 个用例（node:test，零依赖）
+├── test/                    170 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -495,7 +500,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 167 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 170 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
@@ -562,6 +567,8 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
 11. 在侧栏把一个**正在报错 / 有未发送草稿**的会话归档 → 它的 chip 应当立刻从状态栏消失，
    任务栏红灯（如果是唯一红灯）同时熄灭；取消归档后 chip 回来。
    `__DSH_SESSION_HUB__.inspect().archivedSessions` 是插件读到的归档集合大小。
+12. 把鼠标移到「状态会话」/「最近会话」标题上 → 出现 hover 底色（说明可点）；点一下整组收起，
+   标题后的 chevron 从 `⌄` 转到 `›`、后面多出小号数字，再点一下恢复。
 
 ---
 

@@ -31,6 +31,15 @@
  *
  * 第二组条目不参与第一组的折叠：它的上限（`MAX_RECENT_ROWS`）在模型层就兜住了。
  *
+ * ## 组标题就是开关
+ *
+ * 两个组标题（`状态会话` / `最近会话`）都是按钮：点一下整组收起（只剩标题 + 条目数），
+ * 再点一下展开。按钮自带 chevron 图标——展开时朝下 `⌄`、收起时旋转 90° 朝右 `›`，
+ * 配合 hover 底色与 `cursor: pointer` 告诉用户「这里可以点」。
+ *
+ * 注意它与第一组的 `+N` 是两件事：`+N` 改的是「这一组显示 3 条还是全部」，
+ * 组标题改的是「这一组还显示不显示」。收起状态只活在组件内存里（刷新页面回到默认展开）。
+ *
  * @module dsh-session-status-hub/hub-ui
  */
 
@@ -99,6 +108,17 @@ function createSessionHubRail(React, deps, variant = 'header') {
     '.dsh-hub{display:flex;align-items:center;gap:6px;min-width:0;max-width:min(46vw,700px);overflow-x:auto;overflow-y:hidden;padding:2px 4px 2px 0;scrollbar-width:none;font:inherit}',
     '.dsh-hub::-webkit-scrollbar{display:none}',
     '.dsh-hub__label{flex:none;font-size:11px;line-height:1;color:var(--dsw-alias-label-secondary);letter-spacing:.04em;margin-right:2px;user-select:none;white-space:nowrap}',
+    // 组标题本身就是开关：点一下整组收起 / 展开。因此它必须有可点的手感——
+    // cursor:pointer + hover 底色与文字提亮 + focus-visible 描边，缺一样用户就只会去点 chip。
+    '.dsh-hub__labelbtn{display:inline-flex;align-items:center;gap:3px;flex:none;height:22px;margin-right:2px;padding:0 5px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:1;letter-spacing:.04em;white-space:nowrap;cursor:pointer;user-select:none;transition:background .12s ease,color .12s ease,border-color .12s ease}',
+    '.dsh-hub__labelbtn:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}',
+    '.dsh-hub__labelbtn:active{background:var(--dsw-alias-bg-layer-1)}',
+    '.dsh-hub__labelbtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+    // chevron：展开时朝下（⌄），收起时旋转 -90° 变成朝右（›），过渡让它看起来是「转向」而不是跳变。
+    '.dsh-hub__chevron{flex:none;transition:transform .12s ease}',
+    '.dsh-hub__labelbtn--collapsed .dsh-hub__chevron{transform:rotate(-90deg)}',
+    // 收起时用小号数字提示「里面还有几条」，这样折起来也不丢信息（不用强调色）。
+    '.dsh-hub__count{flex:none;font-size:10px;line-height:1;color:var(--dsw-alias-label-tertiary)}',
     '.dsh-hub__idle{flex:none;display:inline-flex;align-items:center;height:26px;padding:0 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1;white-space:nowrap}',
     '.dsh-hub__chip{flex:none;display:inline-flex;align-items:center;gap:6px;max-width:190px;height:26px;padding:0 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:1;cursor:pointer;transition:background .12s ease,border-color .12s ease}',
     '.dsh-hub__chip:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2)}',
@@ -175,14 +195,68 @@ function createSessionHubRail(React, deps, variant = 'header') {
       archivedIds,
     })
     const [expanded, setExpanded] = React.useState(false)
+    // 两组各自的「整组收起」开关：点组标题切换。它与 `expanded`（3 条 → 全部）是两件事：
+    //   - expanded：这一组显示多少条（默认 3 条，其余收在 +N 里）；
+    //   - collapsed：这一组还显不显示（收起后只剩标题，方便窄窗口 / 不想看时腾地方）。
+    const [statusCollapsed, setStatusCollapsed] = React.useState(false)
+    const [recentCollapsed, setRecentCollapsed] = React.useState(false)
     const visibleRows = expanded ? rows : rows.slice(0, 3)
     const hiddenCount = rows.length - visibleRows.length
+
+    /**
+     * 造一个组标题按钮：点击整组收起 / 展开，chevron 图标随之转向。
+     *
+     * 收起时把「里面还有几条」用小号灰字补在标题后面，避免折起来就完全看不到信息；
+     * `aria-expanded` 让读屏也知道这是可折叠区域。
+     * @param {string} key React key。
+     * @param {'status'|'recent'} group 组标识（同时写进 data 属性，便于诊断与测试定位）。
+     * @param {string} label 可见标题文案。
+     * @param {boolean} collapsed 当前是否收起。
+     * @param {number} count 该组里有多少条（收起时用作提示）。
+     * @param {() => void} onToggle 切换回调。
+     * @returns {object} 标题按钮节点。
+     */
+    const groupToggle = (key, group, label, collapsed, count, onToggle) => h('button', {
+      key,
+      type: 'button',
+      className: `dsh-hub__label dsh-hub__labelbtn${collapsed ? ' dsh-hub__labelbtn--collapsed' : ''}`,
+      'data-dsh-hub-group-toggle': group,
+      'aria-expanded': !collapsed,
+      title: t(collapsed ? 'group.expand' : 'group.collapse', { label }),
+      'aria-label': t(collapsed ? 'group.expand' : 'group.collapse', { label }),
+      onClick: onToggle,
+    }, [
+      // 自绘 chevron：不引图标库、不依赖字体，靠 CSS rotate 完成「展开 ⌄ / 收起 ›」的转向。
+      h('svg', {
+        key: 'chevron',
+        className: 'dsh-hub__chevron',
+        viewBox: '0 0 16 16',
+        width: 10,
+        height: 10,
+        'aria-hidden': 'true',
+        focusable: 'false',
+      }, h('path', {
+        d: 'M4 6l4 4 4-4',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.8,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      })),
+      h('span', { key: 'text' }, label),
+      collapsed && count > 0 ? h('span', { key: 'count', className: 'dsh-hub__count' }, String(count)) : null,
+    ])
 
     const children = [h('style', { key: 'style' }, CSS)]
 
     // ---- 第一组：状态会话（需要你处理 / 正在跑的会话 + 未发送草稿）----
-    const statusChildren = [h('span', { key: 'label', className: 'dsh-hub__label' }, t('label'))]
-    if (rows.length === 0) {
+    const statusChildren = [
+      groupToggle('label', 'status', t('label'), statusCollapsed, rows.length,
+        () => setStatusCollapsed((value) => !value)),
+    ]
+    if (statusCollapsed) {
+      // 收起：只留标题（数字提示由 groupToggle 负责），一条 chip 都不渲染。
+    } else if (rows.length === 0) {
       statusChildren.push(h('span', { key: 'idle', className: 'dsh-hub__idle' }, t('idle')))
     } else {
       for (const row of visibleRows) {
@@ -226,26 +300,34 @@ function createSessionHubRail(React, deps, variant = 'header') {
         }, t('collapse')))
       }
     }
-    children.push(h('span', { key: 'status', className: 'dsh-hub__group dsh-hub__group--status' }, statusChildren))
+    children.push(h('span', {
+      key: 'status',
+      className: 'dsh-hub__group dsh-hub__group--status',
+      role: 'group',
+      'aria-label': t('aria', { count: rows.length }),
+    }, statusChildren))
 
     // ---- 第二组：最近会话（刚读完 / 刚确认 / 刚跑完的会话回头入口，最多 5 个）----
     // 这一组不参与第一组的「3 条折叠」：上限本身就由模型层的 MAX_RECENT_ROWS 兜住，
     // 再折一次只会让「最近」变成「还得点一下才能看到」。
     if (recentRows.length > 0) {
       const recentChildren = [
-        h('span', { key: 'label', className: 'dsh-hub__label' }, t('recent.label')),
+        groupToggle('label', 'recent', t('recent.label'), recentCollapsed, recentRows.length,
+          () => setRecentCollapsed((value) => !value)),
       ]
-      for (const row of recentRows) {
-        recentChildren.push(h('button', {
-          key: row.id,
-          type: 'button',
-          className: 'dsh-hub__chip dsh-hub__chip--recent',
-          title: `${t('recent.label')}：${row.title}`,
-          'aria-label': `${t('recent.label')}：${row.title}`,
-          // 最近会话没有状态可确认，只需跳转。
-          onClick: () => deps.openSession(row.id, { raise: false }),
-        },
-        h('span', { className: 'dsh-hub__title' }, row.title)))
+      if (!recentCollapsed) {
+        for (const row of recentRows) {
+          recentChildren.push(h('button', {
+            key: row.id,
+            type: 'button',
+            className: 'dsh-hub__chip dsh-hub__chip--recent',
+            title: `${t('recent.label')}：${row.title}`,
+            'aria-label': `${t('recent.label')}：${row.title}`,
+            // 最近会话没有状态可确认，只需跳转。
+            onClick: () => deps.openSession(row.id, { raise: false }),
+          },
+          h('span', { className: 'dsh-hub__title' }, row.title)))
+        }
       }
       children.push(h('span', {
         key: 'recent',
@@ -258,8 +340,8 @@ function createSessionHubRail(React, deps, variant = 'header') {
     return h('div', {
       className: `dsh-hub dsh-hub--${variant}`,
       'data-dsh-session-status-hub': variant,
-      role: 'group',
-      'aria-label': rows.length === 0 ? t('idle') : t('aria', { count: rows.length }),
+      // 无障碍名称交给两组各自的 aria-label（状态会话 / 最近会话），外层不再重复一份，
+      // 否则读屏会把同一句话念两遍。
     }, children)
   }
 }

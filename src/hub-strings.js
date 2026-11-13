@@ -11,6 +11,7 @@
  * 键的命名约定：
  *   - `label` / `idle` / `aria` / `more` / `collapse`：状态栏容器自身（「状态会话」组）
  *   - `recent.*`：「最近会话」组（组标题、无障碍标签）
+ *   - `group.expand` / `group.collapse`：组标题开关的悬停提示与无障碍名称（`{label}` 是组名）
  *   - `blank.title`：空白「新会话」占位行在状态栏里的标题
  *   - `state.<state>`：状态短标签，`<state>` 必须与 hub-model 的 STATE_ORDER 键一致
  *   - `row.<kind>`：会话行悬停卡片里的失败提示，`<kind>` 与 failureKindOf 的返回值一致
@@ -32,6 +33,8 @@ export const HUB_STRINGS = Object.freeze({
     idle: '全部空闲',
     'recent.label': '最近会话',
     'recent.aria': '最近会话：{count} 个',
+    'group.expand': '展开{label}',
+    'group.collapse': '收起{label}',
     'blank.title': '新会话',
     aria: '状态会话：{count} 个需要关注',
     more: '还有 {count} 个状态会话',
@@ -50,6 +53,8 @@ export const HUB_STRINGS = Object.freeze({
     idle: 'All idle',
     'recent.label': 'Recent Sessions',
     'recent.aria': 'Recent Sessions: {count}',
+    'group.expand': 'Expand {label}',
+    'group.collapse': 'Collapse {label}',
     'blank.title': 'New Session',
     aria: 'Status Sessions: {count} need attention',
     more: '{count} more Status Sessions',

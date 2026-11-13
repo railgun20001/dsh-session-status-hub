@@ -39,6 +39,56 @@ function reactStub() {
 }
 
 /**
+ * 会真的保存状态的 React 桩：`useState` 的 setter 触发一次重渲染。
+ *
+ * 只有「点组标题收起 / 展开」这类交互需要用这个桩；渲染断言的用例继续用 {@link reactStub}
+ * 就够了。hook 顺序在两次渲染之间保持稳定（组件里 hooks 的调用顺序是固定的）。
+ * @returns {{ React: object, mount: (Component: Function, props: object) => object, current: () => object }}
+ *   React 桩、挂载函数与「取当前渲染结果」的函数。
+ */
+function statefulReact() {
+  const states = new Map()
+  let cursor = 0
+  let component = null
+  let currentProps = null
+  let tree = null
+  const renderNow = () => {
+    cursor = 0
+    tree = component(currentProps)
+    return tree
+  }
+  const React = {
+    createElement: (type, props, ...children) => ({
+      type,
+      props: props ?? {},
+      children: children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false),
+    }),
+    useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+    useState: (initial) => {
+      const slot = cursor
+      cursor += 1
+      if (!states.has(slot)) states.set(slot, initial)
+      const set = (next) => {
+        const previous = states.get(slot)
+        states.set(slot, typeof next === 'function' ? next(previous) : next)
+        renderNow()
+      }
+      return [states.get(slot), set]
+    },
+    useEffect: () => {},
+  }
+  return {
+    React,
+    mount: (Component, props) => {
+      component = Component
+      currentProps = props
+      return renderNow()
+    },
+    current: () => tree,
+  }
+}
+
+/**
  * 载入组件工厂。
  * @returns {Function} createSessionHubRail。
  */
@@ -324,6 +374,98 @@ test('有未发送草稿的会话渲染成灰色「未开始」chip', () => {
   // 灰色点复用主题的中性色（与官方空闲点同色），不给它安排任何强调色。
   const style = tree.children[0].children[0]
   assert.match(style, /\.dsh-hub__chip--draft \.dsh-hub__dot\{background:var\(--dsw-alias-label-tertiary\)\}/)
+})
+
+test('组标题是开关：点「状态会话」整组收起再展开，chevron 与 aria-expanded 同步', () => {
+  const harness = statefulReact()
+  const Rail = loadFactory()(harness.React, {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  const list = {
+    byId: { s1: row('s1', { running: true, updatedAt: 10 }) },
+    projectionsBySession: {},
+  }
+  const tree = harness.mount(Rail, {
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+
+  const toggle = findNode(tree, (node) => node.props?.['data-dsh-hub-group-toggle'] === 'status')
+  assert.ok(toggle !== undefined, '组标题应当是按钮（data-dsh-hub-group-toggle="status"）')
+  assert.equal(toggle.props['aria-expanded'], true)
+  assert.match(toggle.props.className, /dsh-hub__labelbtn/)
+  assert.doesNotMatch(toggle.props.className, /dsh-hub__labelbtn--collapsed/)
+  assert.equal(toggle.props.title, '收起状态会话')
+  assert.equal(chipsOf(tree, 'dsh-hub__chip--running').length, 1)
+
+  toggle.props.onClick()
+  const collapsedTree = harness.current()
+  const collapsed = findNode(collapsedTree, (node) => node.props?.['data-dsh-hub-group-toggle'] === 'status')
+  assert.equal(collapsed.props['aria-expanded'], false)
+  assert.match(collapsed.props.className, /dsh-hub__labelbtn--collapsed/)
+  assert.equal(collapsed.props.title, '展开状态会话')
+  assert.deepEqual(chipsOf(collapsedTree, 'dsh-hub__chip'), [], '收起后一条 chip 都不渲染')
+  // 收起时标题后面用小号灰字补上「还有几条」，折起来也不丢信息。
+  const count = findNode(collapsedTree, (node) => node.props?.className === 'dsh-hub__count')
+  assert.deepEqual(count.children, ['1'])
+  assert.doesNotMatch(collectText(collapsedTree).join('|'), /全部空闲/)
+
+  collapsed.props.onClick()
+  assert.equal(chipsOf(harness.current(), 'dsh-hub__chip--running').length, 1, '再点一次恢复展开')
+})
+
+test('点「最近会话」标题只收起该组：标题留着、条目消失，状态组不受影响', () => {
+  const harness = statefulReact()
+  const Rail = loadFactory()(harness.React, {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  const list = {
+    byId: { active: row('active', { running: true, updatedAt: 20 }), idle: row('idle', { updatedAt: 10 }) },
+    projectionsBySession: {},
+  }
+  const tree = harness.mount(Rail, {
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  assert.deepEqual(titlesOf(chipsOf(tree, 'dsh-hub__chip--recent')), ['会话 idle'])
+
+  const toggle = findNode(tree, (node) => node.props?.['data-dsh-hub-group-toggle'] === 'recent')
+  assert.ok(toggle !== undefined, '最近会话组标题也应当是开关')
+  toggle.props.onClick()
+
+  const collapsedTree = harness.current()
+  assert.deepEqual(chipsOf(collapsedTree, 'dsh-hub__chip--recent'), [])
+  assert.match(collectText(collapsedTree).join('|'), /最近会话/, '收起只是藏条目，标题还在')
+  // 状态组完全不受影响。
+  assert.equal(chipsOf(collapsedTree, 'dsh-hub__chip--running').length, 1)
+})
+
+test('组标题按钮有可点的视觉线索：cursor / hover 底色 / chevron 转向过渡', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  const tree = Rail({
+    useSessions: (selector) => selector({ byId: { s1: row('s1', { running: true }) }, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const css = tree.children[0].children[0]
+  // 没有 cursor:pointer 用户就不会去点标题；没有 hover 态就不知道能点。
+  assert.match(css, /\.dsh-hub__labelbtn\{[^}]*cursor:pointer/)
+  assert.match(css, /\.dsh-hub__labelbtn:hover\{[^}]*background:var\(--dsw-alias-bg-layer-2\)/)
+  assert.match(css, /\.dsh-hub__labelbtn:focus-visible\{/)
+  // 图标转向：展开朝下，收起旋转 -90° → 朝右，带 transition 让它是「转动」而不是跳变。
+  assert.match(css, /\.dsh-hub__chevron\{[^}]*transition:transform/)
+  assert.match(css, /\.dsh-hub__labelbtn--collapsed \.dsh-hub__chevron\{transform:rotate\(-90deg\)\}/)
+  // chevron 是自绘 SVG（不依赖图标库 / 字体）。
+  const chevron = findNode(tree, (node) => node.type === 'svg')
+  assert.ok(chevron !== undefined, '标题里应当有 chevron 图标')
+  assert.equal(chevron.props['aria-hidden'], 'true')
 })
 
 test('chrome 变体带 fixed 顶栏类与菜单偏移 CSS', () => {

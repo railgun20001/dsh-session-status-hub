@@ -81,6 +81,12 @@ What it deliberately does *not* do:
   is one click away again. Recent chips carry no state dot, use the secondary text colour, are
   never folded behind `+N`, never notify, and never light the taskbar (taskbar aggregation only
   looks at the status group). A Session never appears in both groups.
+- **Each group title is a toggle**: clicking `Status Sessions` / `Recent Sessions` folds its chips
+  away (leaving the title plus a small item count) and clicking again brings them back. The title
+  carries a hand-drawn chevron — `⌄` expanded, rotated 90° to `›` when collapsed — plus
+  `cursor: pointer`, a hover background and a `focus-visible` ring, so it reads as clickable.
+  That is a different knob from `+N`: `+N` switches between "3 chips" and "all", the title
+  switches "shown / hidden". Collapse state lives in component memory and resets on reload.
 - **Archived Sessions never show up in either group.** The archive set lives only in the
   workspace registry snapshot (`archivedSessionIds` — session list rows carry no "archived"
   flag), so both the rail (via `useWorkspaces`) and the taskbar aggregation filter against it:
