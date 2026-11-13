@@ -8,9 +8,9 @@ A missing "how are all my Sessions doing right now?" surface for [DeepSeek Harne
 - **A rail in the top title bar** listing the Sessions that need you, ordered by
   `red (failed) > yellow (waiting for your answer) > green (unread) > blue (running) > gray (not started)`.
   A Session with an unsent draft in its composer shows up as a gray "Not started" chip.
-  One click jumps straight to that Session. A second group — **Recent Sessions**, the 5 most
-  recently updated Sessions outside the status group — sits right after it as a way back to
-  the conversation you just left.
+  One click jumps straight to that Session. A second group — **Recent Sessions**, up to 5 of
+  the most recently updated Sessions outside the status group (3 visible + `+N`) — sits right
+  after it as a way back to the conversation you just left.
 - **Windows notifications** when a Session changes state (finished / failed / needs an
   answer), where clicking the toast reopens the Session and brings the DSH window forward.
   A toast clears itself as soon as you open that Session or answer the pending question.
@@ -35,8 +35,8 @@ is waiting for my answer?**
    The 3 chips shown by default are always the 3 that need you most; one click jumps to that
    Session. A Session whose composer holds an unsent draft appears as a gray "Not started" chip.
    That group is labelled **Status Sessions**; a second group after it — **Recent Sessions**
-   (the 5 most recently updated Sessions that are not in the status group) — is the one-click
-   way back to the conversation you just left.
+   (up to 5 of the most recently updated Sessions that are not in the status group, 3 visible +
+   `+N`) — is the one-click way back to the conversation you just left.
 2. **A taskbar status dot** via `ITaskbarList3.SetOverlayIcon` — red / yellow / green on the
    DSH taskbar button, still visible while the window is minimized or buried behind other
    apps.
@@ -76,18 +76,23 @@ What it deliberately does *not* do:
   not take a top-3 slot away from failed / waiting / unread / running Sessions. When higher
   states fill the three default slots, drafts stay behind the `+N` expander.
 - **Two groups on one line**, split by a vertical rule: **Status Sessions** (the five states
-  above, 3 visible + `+N`) and then **Recent Sessions** — the 5 most recently updated Sessions
-  that are not already in the status group, so a Session you just read / acknowledged / finished
-  is one click away again. Recent chips carry no state dot, use the secondary text colour, are
-  never folded behind `+N`, never notify, and never light the taskbar (taskbar aggregation only
+  above, 3 visible + `+N`) and then **Recent Sessions** — up to 5 of the most recently updated
+  Sessions that are not already in the status group (3 visible + `+N`), so a Session you just
+  read / acknowledged / finished is one click away again. Recent chips carry no state dot, use the
+  secondary text colour, never notify, and never light the taskbar (taskbar aggregation only
   looks at the status group). A Session never appears in both groups.
+- **The row scrolls with the wheel**: the container is `overflow-x: auto` with the scrollbar
+  hidden, and a mouse only has a vertical wheel — browsers do not convert that themselves. The
+  rail therefore attaches a non-passive `wheel` listener and maps vertical wheel movement onto
+  `scrollLeft` (`hub-scroll`'s `wheelScrollDelta`). It does **not** swallow the event when
+  nothing overflows, when the intent is horizontal (trackpad swipe / Shift+wheel), or when the
+  end is already reached — so the outer surface still scrolls and nothing feels stuck.
 - **Each group title is a toggle**: clicking `Status Sessions` / `Recent Sessions` folds its chips
   away (leaving the title plus a small item count) and clicking again brings them back. The title
   carries a hand-drawn chevron — `⌄` expanded, rotated 90° to `›` when collapsed — plus
   `cursor: pointer`, a hover background and a `focus-visible` ring, so it reads as clickable.
   That is a different knob from `+N`: `+N` switches between "3 chips" and "all", the title
-  switches "shown / hidden". Collapse state lives in component memory and resets on reload.
-- **Archived Sessions never show up in either group.** The archive set lives only in the
+  switches "shown / hidden". Collapse state lives in component memory and resets on reload.- **Archived Sessions never show up in either group.** The archive set lives only in the
   workspace registry snapshot (`archivedSessionIds` — session list rows carry no "archived"
   flag), so both the rail (via `useWorkspaces`) and the taskbar aggregation filter against it:
   archiving a Session means "put it away", so it must not keep nagging from the title bar.

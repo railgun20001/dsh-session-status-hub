@@ -26,10 +26,15 @@
  * 状态栏一行里并排两组（中间用一条竖直分隔线断开）：
  *
  *   - **状态会话**（`t('label')`）：当下需要你处理 / 正在跑的会话，默认显示 3 条 + `+N`；
- *   - **最近会话**（`t('recent.label')`）：状态组里没有的会话按更新时间取最近 5 个，
- *     作为「刚才那个会话」的回头入口；同一次渲染里两组不会出现同一个会话。
+ *   - **最近会话**（`t('recent.label')`）：状态组里没有的会话按更新时间最多取 5 个，同样默认
+ *     显示 3 条 + `+N`，作为「刚才那个会话」的回头入口；两组不会出现同一个会话。
  *
- * 第二组条目不参与第一组的折叠：它的上限（`MAX_RECENT_ROWS`）在模型层就兜住了。
+ * ## 滚轮
+ *
+ * 整行溢出时容器是 `overflow-x: auto`（滚动条隐藏）。鼠标只有纵向滚轮，浏览器不会把它
+ * 折算成横向滚动，所以组件自己在容器上挂一个非被动的 `wheel` 监听，用
+ * {@link wheelScrollDelta} 把纵向滚轮换成 `scrollLeft` 增量；没溢出、横向意图、已经到头时
+ * 一律不碰事件，交回外层滚动。
  *
  * ## 组标题就是开关
  *
@@ -37,7 +42,7 @@
  * 再点一下展开。按钮自带 chevron 图标——展开时朝下 `⌄`、收起时旋转 90° 朝右 `›`，
  * 配合 hover 底色与 `cursor: pointer` 告诉用户「这里可以点」。
  *
- * 注意它与第一组的 `+N` 是两件事：`+N` 改的是「这一组显示 3 条还是全部」，
+ * 注意它与 `+N` 是两件事：`+N` 改的是「这一组显示 3 条还是全部」，
  * 组标题改的是「这一组还显示不显示」。收起状态只活在组件内存里（刷新页面回到默认展开）。
  *
  * @module dsh-session-status-hub/hub-ui
@@ -195,6 +200,8 @@ function createSessionHubRail(React, deps, variant = 'header') {
       archivedIds,
     })
     const [expanded, setExpanded] = React.useState(false)
+    // 「最近会话」组的 3 条 → 全部（与状态组的 `expanded` 同一套路，只是各自独立）。
+    const [recentExpanded, setRecentExpanded] = React.useState(false)
     // 两组各自的「整组收起」开关：点组标题切换。它与 `expanded`（3 条 → 全部）是两件事：
     //   - expanded：这一组显示多少条（默认 3 条，其余收在 +N 里）；
     //   - collapsed：这一组还显不显示（收起后只剩标题，方便窄窗口 / 不想看时腾地方）。
@@ -202,6 +209,43 @@ function createSessionHubRail(React, deps, variant = 'header') {
     const [recentCollapsed, setRecentCollapsed] = React.useState(false)
     const visibleRows = expanded ? rows : rows.slice(0, 3)
     const hiddenCount = rows.length - visibleRows.length
+    const visibleRecentRows = recentExpanded ? recentRows : recentRows.slice(0, 3)
+    const hiddenRecentCount = recentRows.length - visibleRecentRows.length
+
+    // 滚轮横向滚动：状态栏是一行横向 chip，溢出时只有纵向滚轮可用，浏览器不会自动折算。
+    // 用原生监听（`passive: false`）而不是 React 的 onWheel：React 把 wheel 挂在根上且是
+    // 被动监听，拿不到 preventDefault，滚轮会同时滚外层。
+    const railRef = typeof React.useRef === 'function' ? React.useRef(null) : null
+    React.useEffect(() => {
+      const node = railRef?.current
+      if (node === null || node === undefined || typeof node.addEventListener !== 'function') return undefined
+      const onWheel = (event) => {
+        const delta = wheelScrollDelta({
+          deltaX: event.deltaX,
+          deltaY: event.deltaY,
+          deltaMode: event.deltaMode,
+          scrollWidth: node.scrollWidth,
+          clientWidth: node.clientWidth,
+          scrollLeft: node.scrollLeft,
+        })
+        // 0 = 没溢出 / 横向意图 / 已到边界：不碰事件，让外层照常滚。
+        if (delta === 0) return
+        node.scrollLeft += delta
+        try {
+          event.preventDefault()
+        } catch {
+          /* 被动监听环境下拿不到：位置已经改了，忽略 */
+        }
+      }
+      node.addEventListener('wheel', onWheel, { passive: false })
+      return () => {
+        try {
+          node.removeEventListener('wheel', onWheel)
+        } catch {
+          /* 节点已经卸载 */
+        }
+      }
+    }, [railRef])
 
     /**
      * 造一个组标题按钮：点击整组收起 / 展开，chevron 图标随之转向。
@@ -316,7 +360,7 @@ function createSessionHubRail(React, deps, variant = 'header') {
           () => setRecentCollapsed((value) => !value)),
       ]
       if (!recentCollapsed) {
-        for (const row of recentRows) {
+        for (const row of visibleRecentRows) {
           recentChildren.push(h('button', {
             key: row.id,
             type: 'button',
@@ -327,6 +371,25 @@ function createSessionHubRail(React, deps, variant = 'header') {
             onClick: () => deps.openSession(row.id, { raise: false }),
           },
           h('span', { className: 'dsh-hub__title' }, row.title)))
+        }
+        // 与状态组同款：默认 3 条，其余收在 `+N` 里，展开后可以「收起」收回 3 条。
+        if (hiddenRecentCount > 0) {
+          recentChildren.push(h('button', {
+            key: 'recent-more',
+            type: 'button',
+            className: 'dsh-hub__more',
+            title: t('recent.more', { count: hiddenRecentCount }),
+            'aria-label': t('recent.more', { count: hiddenRecentCount }),
+            onClick: () => setRecentExpanded(true),
+          }, `+${hiddenRecentCount}`))
+        } else if (recentExpanded && recentRows.length > 3) {
+          recentChildren.push(h('button', {
+            key: 'recent-collapse',
+            type: 'button',
+            className: 'dsh-hub__more',
+            title: t('collapse'),
+            onClick: () => setRecentExpanded(false),
+          }, t('collapse')))
         }
       }
       children.push(h('span', {
@@ -340,6 +403,8 @@ function createSessionHubRail(React, deps, variant = 'header') {
     return h('div', {
       className: `dsh-hub dsh-hub--${variant}`,
       'data-dsh-session-status-hub': variant,
+      // 滚轮横向滚动的监听挂在这个节点上（ref 只用来 addEventListener，不参与渲染）。
+      ...(railRef === null ? {} : { ref: railRef }),
       // 无障碍名称交给两组各自的 aria-label（状态会话 / 最近会话），外层不再重复一份，
       // 否则读屏会把同一句话念两遍。
     }, children)

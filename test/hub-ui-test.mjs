@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { deriveHubRows, deriveRecentRows, failureKindOf, projectionOf, STATE_LABELS } from '../src/hub-model.js'
+import { wheelScrollDelta } from '../src/hub-scroll.js'
 import { HUB_STRINGS } from '../src/hub-strings.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -34,6 +35,7 @@ function reactStub() {
     }),
     useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
     useState: (initial) => [initial, () => {}],
+    useRef: (initial) => ({ current: initial ?? null }),
     useEffect: () => {},
   }
 }
@@ -75,6 +77,12 @@ function statefulReact() {
       }
       return [states.get(slot), set]
     },
+    useRef: (initial) => {
+      const slot = cursor
+      cursor += 1
+      if (!states.has(slot)) states.set(slot, { current: initial ?? null })
+      return states.get(slot)
+    },
     useEffect: () => {},
   }
   return {
@@ -93,11 +101,13 @@ function statefulReact() {
  * @returns {Function} createSessionHubRail。
  */
 function loadFactory() {
-  // 组件里的可见文案来自 HUB_STRINGS（单一来源），所以这里把它作为自由变量注入。
+  // 组件里的可见文案来自 HUB_STRINGS（单一来源），滚轮折算来自 hub-scroll（纯逻辑），
+  // 所以把它们作为自由变量注入——与 bundle 内联时的同一作用域等价。
   // eslint-disable-next-line no-new-func
-  return new Function('deriveHubRows', 'deriveRecentRows', 'STATE_LABELS', 'HUB_STRINGS', `${SOURCE}\nreturn createSessionHubRail`)(
+  return new Function('deriveHubRows', 'deriveRecentRows', 'wheelScrollDelta', 'STATE_LABELS', 'HUB_STRINGS', `${SOURCE}\nreturn createSessionHubRail`)(
     deriveHubRows,
     deriveRecentRows,
+    wheelScrollDelta,
     STATE_LABELS,
     HUB_STRINGS,
   )
@@ -512,18 +522,72 @@ test('「状态会话」组之后追加「最近会话」组：最多 5 个、�
     '最近会话组必须排在状态会话组之后',
   )
 
+  // 与状态组同款：默认 3 条，其余收在 +N 里（模型层最多给 5 条）。
   const recent = chipsOf(tree, 'dsh-hub__chip--recent')
-  assert.equal(recent.length, 5, '最近会话最多 5 个')
-  // 状态组里的 r1 不会在最近会话里重复出现；剩下按更新时间倒序取前 5 个。
-  assert.deepEqual(titlesOf(recent), ['会话 r2', '会话 r3', '会话 r4', '会话 r5', '会话 r6'])
+  assert.equal(recent.length, 3, '最近会话默认只显示 3 条')
+  // 状态组里的 r1 不会在最近会话里重复出现；剩下按更新时间倒序。
+  assert.deepEqual(titlesOf(recent), ['会话 r2', '会话 r3', '会话 r4'])
   assert.deepEqual(titlesOf(chipsOf(tree, 'dsh-hub__chip--answer')), ['会话 r1等待回答'])
+  const moreRecent = findNode(tree, (node) => node.props?.className === 'dsh-hub__more'
+    && node.props?.title === '还有 2 个最近会话')
+  assert.ok(moreRecent !== undefined, '还有 2 条时应当渲染 +2')
+  assert.deepEqual(moreRecent.children, ['+2'])
 
-  // 最近会话组带自己的无障碍标签，读屏能把两组分开。
+  // 最近会话组带自己的无障碍标签，读屏能把两组分开（组里共 5 条，展开后可全部看到）。
   const recentGroup = findNode(tree, (node) => typeof node.props?.className === 'string'
     && node.props.className.includes('dsh-hub__group--recent'))
   assert.ok(recentGroup !== undefined, '应当渲染最近会话组容器')
   assert.equal(recentGroup.props.role, 'group')
   assert.equal(recentGroup.props['aria-label'], '最近会话：5 个')
+})
+
+test('最近会话点 +N 展开到 5 条，再点「收起」回到 3 条', () => {
+  const harness = statefulReact()
+  const Rail = loadFactory()(harness.React, {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  const byId = {}
+  for (let index = 1; index <= 8; index += 1) {
+    byId[`r${index}`] = row(`r${index}`, { updatedAt: 900 - index * 10 })
+  }
+  const tree = harness.mount(Rail, {
+    useSessions: (selector) => selector({ byId, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  assert.equal(chipsOf(tree, 'dsh-hub__chip--recent').length, 3, '默认 3 条')
+
+  const more = findNode(tree, (node) => node.props?.className === 'dsh-hub__more')
+  assert.deepEqual(more.children, ['+2'], '模型层最多给 5 条，因此 +2')
+  more.props.onClick()
+  const expandedTree = harness.current()
+  assert.deepEqual(titlesOf(chipsOf(expandedTree, 'dsh-hub__chip--recent')), [
+    '会话 r1', '会话 r2', '会话 r3', '会话 r4', '会话 r5',
+  ])
+  const collapse = findNode(expandedTree, (node) => node.props?.className === 'dsh-hub__more')
+  assert.deepEqual(collapse.children, ['收起'])
+  collapse.props.onClick()
+  assert.equal(chipsOf(harness.current(), 'dsh-hub__chip--recent').length, 3, '收起后回到默认 3 条')
+})
+
+test('滚轮可以把顶部这排会话横向滚动（纵向滚轮折算成 scrollLeft）', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  // 状态栏只在溢出时接管滚轮：边界情况由模型层纯函数保证（见 hub-scroll-test）。
+  assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: 600, clientWidth: 600, scrollLeft: 0 }), 0)
+  assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: 900, clientWidth: 600, scrollLeft: 100 }), 120)
+
+  const tree = Rail({
+    useSessions: (selector) => selector({ byId: { s1: row('s1', { running: true }) }, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  // 滚轮监听挂在容器上（ref 存在），容器本身横向滚动。
+  assert.equal(typeof tree.props.ref, 'object')
+  assert.match(tree.children[0].children[0], /\.dsh-hub\{[^}]*overflow-x:auto/)
 })
 
 test('已归档会话不显示：组件从 useWorkspaces 的 archivedSessionIds 过滤两组', () => {

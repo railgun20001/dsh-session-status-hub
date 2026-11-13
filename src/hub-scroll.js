@@ -1,10 +1,14 @@
 /**
  * dsh-session-status-hub —— 侧栏会话行定位与滚动（纯浏览器 DOM 辅助，可在 Node 里单测）
  *
- * 目标：点击状态栏 chip / 通知跳转到某个会话后，让**左侧会话列表也滚动到该会话行**
- * （尽量垂直居中），长列表里目标行不在视野内时尤其重要。
+ * 两件事：
  *
- * ## 为什么插件要自己补这一步
+ *   1. **侧栏揭示**：点击状态栏 chip / 通知跳转到某个会话后，让**左侧会话列表也滚动到该
+ *      会话行**（尽量垂直居中），见 {@link createRowRevealer}；
+ *   2. **状态栏滚轮**：标题栏那条窄带溢出时只有纵向滚轮可用，这里把纵向滚轮折算成横向
+ *      滚动量，见 {@link wheelScrollDelta}。
+ *
+ * ## 为什么插件要自己补侧栏滚动这一步
  *
  * 官方 ui-workspace 的侧栏**有**一套完整的 reveal 机制：
  *   1. 展开目标会话所在的折叠分组；
@@ -241,4 +245,54 @@ export function createRowRevealer({
     }
     attempt()
   }
+}
+
+/** 鼠标滚轮「按行滚动」时，一行折算成多少像素（Firefox 的 deltaMode === 1）。 */
+export const WHEEL_LINE_HEIGHT_PX = 16
+
+/**
+ * 把一次 `wheel` 事件换算成状态栏的**横向**滚动量（纯函数，可单测）。
+ *
+ * ## 为什么需要它
+ *
+ * 状态栏是一行横向排列的 chip，溢出时容器是 `overflow-x: auto`（滚动条被隐藏）。
+ * 但用户的鼠标只有**纵向**滚轮：浏览器不会把纵向滚轮自动变成横向滚动，于是「滚轮滚不动
+ * 顶部这一排会话」。这里把纵向滚轮量折算成 `scrollLeft` 增量，让滚轮在这条窄带上可用。
+ *
+ * ## 什么时候「不吃」事件
+ *
+ * 返回 0 表示调用方**不要动 `scrollLeft`、也不要 `preventDefault`**：
+ *
+ *   - 容器根本没横向溢出（`scrollWidth <= clientWidth`）：没有可滚的东西，事件该给外层；
+ *   - 本来就是横向意图（`|deltaX| >= |deltaY|`，触控板左右滑 / Shift+滚轮）：交给浏览器原生处理；
+ *   - 已经滚到这一方向的头 / 尾：继续吞事件会让「滚到底之后整个应用像卡住」，交回外层更自然。
+ *
+ * @param {object} input 输入。
+ * @param {number} [input.deltaX] 横向滚轮量（像素或按 {@link input.deltaMode} 的单位）。
+ * @param {number} [input.deltaY] 纵向滚轮量。
+ * @param {number} [input.deltaMode] DOM 的 `WheelEvent.deltaMode`：0 像素、1 行、2 页。
+ * @param {number} [input.scrollWidth] 容器的 `scrollWidth`。
+ * @param {number} [input.clientWidth] 容器的 `clientWidth`。
+ * @param {number} [input.scrollLeft] 容器当前的 `scrollLeft`。
+ * @returns {number} 需要叠加到 `scrollLeft` 上的像素增量；0 表示不处理这次事件。
+ */
+export function wheelScrollDelta({
+  deltaX = 0,
+  deltaY = 0,
+  deltaMode = 0,
+  scrollWidth = 0,
+  clientWidth = 0,
+  scrollLeft = 0,
+} = {}) {
+  const max = (Number.isFinite(scrollWidth) ? scrollWidth : 0) - (Number.isFinite(clientWidth) ? clientWidth : 0)
+  if (!(max > 0)) return 0
+  const scale = deltaMode === 1 ? WHEEL_LINE_HEIGHT_PX : deltaMode === 2 ? (clientWidth > 0 ? clientWidth : 0) : 1
+  const dx = (Number.isFinite(deltaX) ? deltaX : 0) * scale
+  const dy = (Number.isFinite(deltaY) ? deltaY : 0) * scale
+  // 横向意图（或纯横向滚动）原样交给浏览器：我们只负责「纵向 → 横向」这一步。
+  if (Math.abs(dx) >= Math.abs(dy)) return 0
+  const start = Number.isFinite(scrollLeft) ? scrollLeft : 0
+  // 到边界就让位：否则滚到最右之后滚轮会一直被这条窄带吞掉。
+  if ((dy < 0 && start <= 0) || (dy > 0 && start >= max)) return 0
+  return Math.max(-start, Math.min(max - start, dy))
 }

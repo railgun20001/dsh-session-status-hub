@@ -12,12 +12,14 @@ import assert from 'node:assert/strict'
 
 import {
   SESSION_ROW_PREFIX,
+  WHEEL_LINE_HEIGHT_PX,
   WORKSPACE_ROW_PREFIX,
   findRowByKey,
   findSessionRow,
   findWorkspaceRow,
   owningWorkspaceIdOf,
   scrollSessionRowIntoView,
+  wheelScrollDelta,
 } from '../src/hub-scroll.js'
 
 /**
@@ -142,4 +144,39 @@ test('滚动抛异常（宿主不支持该选项）时静默吞掉', () => {
 test('前缀常量与官方 ui-workspace 的 data-row-key 约定一致', () => {
   assert.equal(SESSION_ROW_PREFIX, 'session:')
   assert.equal(WORKSPACE_ROW_PREFIX, 'workspace:')
+})
+
+test('滚轮横向滚动：只在溢出时接管，纵向滚轮折算成 scrollLeft', () => {
+  // 没溢出：不动 scrollLeft、也不吃事件（外层照常滚）。
+  assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: 600, clientWidth: 600 }), 0)
+  assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: 400, clientWidth: 600 }), 0)
+  // 纵向滚轮向下 / 向上 → 正的 / 负的 scrollLeft 增量。
+  assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: 900, clientWidth: 600, scrollLeft: 100 }), 120)
+  assert.equal(wheelScrollDelta({ deltaY: -120, scrollWidth: 900, clientWidth: 600, scrollLeft: 300 }), -120)
+  // 增量被夹在可滚范围里，绝不越界。
+  assert.equal(wheelScrollDelta({ deltaY: 500, scrollWidth: 900, clientWidth: 600, scrollLeft: 250 }), 50)
+  assert.equal(wheelScrollDelta({ deltaY: -500, scrollWidth: 900, clientWidth: 600, scrollLeft: 80 }), -80)
+  // 已经到头 / 到尾：让位给外层，避免「滚到底之后整个应用像卡住」。
+  assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: 900, clientWidth: 600, scrollLeft: 300 }), 0)
+  assert.equal(wheelScrollDelta({ deltaY: -120, scrollWidth: 900, clientWidth: 600, scrollLeft: 0 }), 0)
+})
+
+test('滚轮横向滚动：横向意图原样放行，行 / 页单位按设置折算', () => {
+  // 触控板左右滑、Shift+滚轮：本来就横向，交给浏览器原生处理。
+  assert.equal(wheelScrollDelta({ deltaX: 120, deltaY: 0, scrollWidth: 900, clientWidth: 600, scrollLeft: 100 }), 0)
+  // 横向量大于等于纵向量 → 视为横向意图（这里 120 > 90，交给浏览器原生滚）。
+  assert.equal(wheelScrollDelta({ deltaX: 120, deltaY: 90, scrollWidth: 900, clientWidth: 600, scrollLeft: 100 }), 0)
+  // deltaMode=1（Firefox 按行）→ 一行算 16px。
+  assert.equal(WHEEL_LINE_HEIGHT_PX, 16)
+  assert.equal(
+    wheelScrollDelta({ deltaY: 3, deltaMode: 1, scrollWidth: 900, clientWidth: 600, scrollLeft: 0 }),
+    3 * WHEEL_LINE_HEIGHT_PX,
+  )
+  // deltaMode=2（按页）→ 一页算一个视口宽，但同样被夹在可滚范围内。
+  assert.equal(wheelScrollDelta({ deltaY: 1, deltaMode: 2, scrollWidth: 1200, clientWidth: 600, scrollLeft: 0 }), 600)
+  assert.equal(wheelScrollDelta({ deltaY: 1, deltaMode: 2, scrollWidth: 900, clientWidth: 600, scrollLeft: 250 }), 50)
+  // 坏值一律当 0，不抛错。
+  assert.equal(wheelScrollDelta(), 0)
+  assert.equal(wheelScrollDelta({ deltaY: Number.NaN, scrollWidth: 900, clientWidth: 600 }), 0)
+  assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: Number.NaN, clientWidth: 600 }), 0)
 })
