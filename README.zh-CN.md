@@ -217,6 +217,7 @@ localStorage["dsh.conversation.<sessionId>"] = {
   **没有 URL 路由**，浏览器自带的返回键回到的是「上一次整页」而不是「上一个对话」。这两个按钮
   沿插件自己记的「会话访问历史」前后跳，语义与浏览器一致：跳过一个会话后再打开新会话，前进分支
   被截断。没有可去的地方时按钮置灰 + `disabled`（位置固定，不会让整排 chip 左右跳）；
+  **它们钉在外层固定带上，不随 chip 区横向滚动**；
   历史只在本次页面内存里，刷新（`Ctrl+R`）后从当前会话重新开始；
 - **一组标题就是开关**：`状态会话` / `最近会话` 两个组标题都是按钮，点一下整组收起（只剩标题 +
   小号数字提示还有几条），再点一下展开；标题带一个自绘 chevron 图标，展开时朝下 `⌄`、收起时
@@ -225,11 +226,14 @@ localStorage["dsh.conversation.<sessionId>"] = {
   收起状态只存在组件内存里，刷新页面回到默认展开；
 - 每组默认只显示 3 条；还有更多时显示 `+N`，点一下展开全部，再点「收起」恢复，
   既不挤压标题，也不会把第 4 条截成半截；
-- chip 横向排列，超出宽度可横向滚动（隐藏滚动条），不挤压标题；
-- **滚轮能横向滚这一排**：容器是 `overflow-x:auto`（滚动条隐藏），鼠标只有纵向滚轮、浏览器不会
-  自动折算，所以容器上挂了非被动的 `wheel` 监听，用 `hub-scroll` 的 `wheelScrollDelta` 把纵向
-  滚轮换成 `scrollLeft` 增量。没溢出、横向意图（触控板左右滑 / Shift+滚轮）、已经滚到头尾时
-  **不吃事件**，交回外层滚动，不会出现「滚到底之后整个应用卡住」；
+- **状态栏分两层**：外层是不滚动的固定带，`‹` `›` 导航按钮常驻左端；内层才是
+  `overflow-x:auto` 的 chip 滚动区（两组标题与条目都在里面）。所以 chip 区滚到最右侧时，
+  前进 / 后退按钮仍固定在最左，**不会被滚出视野**；
+- **滚轮能横向滚这一排**：内层滚动区是 `overflow-x:auto`（滚动条隐藏），鼠标只有纵向滚轮、浏览器不会
+  自动折算，所以外层固定带上挂了非被动的 `wheel` 监听（鼠标停在导航按钮上滚轮也管用），
+  用 `hub-scroll` 的 `wheelScrollDelta` 读内层滚动区的宽度 / `scrollLeft`，把纵向
+  滚轮换成内层的 `scrollLeft` 增量。没溢出、横向意图（触控板左右滑 / Shift+滚轮）、已经滚到头尾时
+  **不吃事件**，交回宿主页面 / 祖先滚动容器，不会出现「滚到底之后整个应用卡住」；
 - 「未开始」chip 用三级文字灰（`--dsw-alias-label-tertiary`）：比空闲点更清楚，
   又比红 / 黄 / 绿低调，不使用任何强调色；
 - 全部空闲时显示一个低调的「全部空闲」；没有可用会话（或插槽钩子缺失）时也不会报错；
@@ -404,7 +408,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-slots.js         四处插槽注册（含插件详情页设置区块）
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    194 个用例（node:test，零依赖）
+├── test/                    196 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -516,7 +520,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 194 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 196 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
@@ -591,7 +595,9 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
 12. 把鼠标移到「状态会话」/「最近会话」标题上 → 出现 hover 底色（说明可点）；点一下整组收起，
    标题后的 chevron 从 `⌄` 转到 `›`、后面多出小号数字，再点一下恢复。
 13. 开到状态栏横向溢出（多个会话 / 把窗口拉窄）→ 鼠标停在状态栏上滚轮，这一排应当**横向滚动**；
-   滚到最右后继续滚轮，事件交回外层（不出现「卡住不动」）。触控板左右滑 / Shift+滚轮保持原生行为。
+   滚到最右后继续滚轮，事件交回宿主页面 / 祖先滚动容器（不出现「卡住不动」）。触控板左右滑 / Shift+滚轮保持原生行为。
+   **滚到最右时最左端的 `‹` `›` 仍固定可见**（不跟着 chip 一起滚走）；把鼠标停在这两个按钮上滚轮，
+   chip 区一样能横滚。
 14. 依次点开 A → B → C 三个会话，然后点状态栏最左端的 `‹` → 回到 B，再点 `‹` 回到 A
    （此时 `‹` 置灰），点 `›` 又回到 B / C；在 B 的位置直接点开新会话 D，`›` 应当置灰
    （前进分支被截断）。`__DSH_SESSION_HUB__.getNavHistory()` 能看到 `entries` 与 `index` 的变化。

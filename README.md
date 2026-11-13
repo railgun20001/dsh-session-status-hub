@@ -38,7 +38,8 @@ is waiting for my answer?**
    (up to 5 of the most recently updated Sessions that are not in the status group, 3 visible +
    `+N`) — is the one-click way back to the conversation you just left. The very left of the rail
    holds two icon buttons, `‹` / `›`, that step back and forth through the **Session visit
-   history** (DSH has no URL routing, so the browser's own back button cannot do this).
+   history** (DSH has no URL routing, so the browser's own back button cannot do this). They
+  sit on the outer fixed strip and do **not** scroll with the chip area.
 2. **A taskbar status dot** via `ITaskbarList3.SetOverlayIcon` — red / yellow / green on the
    DSH taskbar button, still visible while the window is minimized or buried behind other
    apps.
@@ -83,12 +84,17 @@ What it deliberately does *not* do:
   read / acknowledged / finished is one click away again. Recent chips carry no state dot, use the
   secondary text colour, never notify, and never light the taskbar (taskbar aggregation only
   looks at the status group). A Session never appears in both groups.
-- **The row scrolls with the wheel**: the container is `overflow-x: auto` with the scrollbar
-  hidden, and a mouse only has a vertical wheel — browsers do not convert that themselves. The
-  rail therefore attaches a non-passive `wheel` listener and maps vertical wheel movement onto
-  `scrollLeft` (`hub-scroll`'s `wheelScrollDelta`). It does **not** swallow the event when
-  nothing overflows, when the intent is horizontal (trackpad swipe / Shift+wheel), or when the
-  end is already reached — so the outer surface still scrolls and nothing feels stuck.
+- **The rail has two layers**: an outer, **non-scrolling** fixed strip that holds the `‹` / `›`
+  navigation buttons pinned at the left, and an inner `overflow-x: auto` chip scroller (both
+  groups live there). Scrolling the chips all the way right never scrolls the navigation away.
+- **The chips scroll with the wheel**: the inner scroller has its scrollbar hidden, and a mouse
+  only has a vertical wheel — browsers do not convert that themselves. The outer fixed strip
+  therefore carries a non-passive `wheel` listener (so the wheel works even over the nav
+  buttons), and `hub-scroll`'s `wheelScrollDelta` reads the **inner scroller's** width and
+  `scrollLeft` to turn vertical wheel movement into its `scrollLeft`. It does **not** swallow
+  the event when nothing overflows, when the intent is horizontal (trackpad swipe /
+  Shift+wheel), or when the end is already reached — so an ancestor scroll container still
+  scrolls and nothing feels stuck.
 - **Each group title is a toggle**: clicking `Status Sessions` / `Recent Sessions` folds its chips
   away (leaving the title plus a small item count) and clicking again brings them back. The title
   carries a hand-drawn chevron — `⌄` expanded, rotated 90° to `›` when collapsed — plus
@@ -248,7 +254,7 @@ state facts ("this turn finished and you haven't looked"), not interruptions.
 ## Diagnostics
 
 ```powershell
-npm run check     # 1) lib/client.js matches src/  2) 194 test cases
+npm run check     # 1) lib/client.js matches src/  2) 196 test cases
 ```
 
 ```js
@@ -301,7 +307,7 @@ dsh-session-status-hub/
 ├── src/hub-slots.js         slot registration
 ├── src/client-main.js       wiring: services → model → notifications / rail / taskbar
 ├── build/bundle.mjs         inlines src/ in order into one classic-script bundle
-├── test/                    194 node:test cases, zero dependencies
+├── test/                    196 node:test cases, zero dependencies
 ├── locale/{zh,en}.json      plugin manager title and description
 ├── icon.svg                 plugin icon
 ├── cordis.patch.yml         bundle patch inserting the session-hub row

@@ -97,6 +97,40 @@ function statefulReact() {
 }
 
 /**
+ * 会真的执行 useEffect、并能给两个 ref 注入伪 DOM 节点的 React 桩。
+ *
+ * 用来验证「滚轮监听挂在不滚动的外层、读写的是内层滚动区」：组件挂载时 effect 立刻跑，
+ * 捕获到的 wheel 处理器可以直接喂一个事件桩，断言 scrollLeft 的变化与 preventDefault。
+ * @param {{ rail: object, scroller: object }} nodes 外层固定带与内层滚动区的伪 DOM 节点。
+ * @returns {{ React: object, listeners: () => Array<object> }} React 桩与已注册监听的读取函数。
+ */
+function wheelReact({ rail, scroller }) {
+  const registered = []
+  const refs = [{ current: rail }, { current: scroller }]
+  rail.addEventListener = (type, handler, options) => { registered.push({ type, handler, options }) }
+  rail.removeEventListener = () => {}
+  let cursor = 0
+  return {
+    React: {
+      createElement: (type, props, ...children) => ({
+        type,
+        props: props ?? {},
+        children: children.flat(Infinity).filter((child) => child !== null && child !== undefined && child !== false),
+      }),
+      useSyncExternalStore: (_subscribe, getSnapshot) => getSnapshot(),
+      useState: (initial) => [initial, () => {}],
+      useRef: () => {
+        const slot = cursor
+        cursor += 1
+        return refs[slot]
+      },
+      // 挂载即执行：拿到传给 addEventListener 的处理器。
+      useEffect: (effect) => { effect() },
+    },
+    listeners: () => registered,
+  }
+}
+/**
  * 载入组件工厂。
  * @returns {Function} createSessionHubRail。
  */
@@ -580,13 +614,13 @@ test('最近会话点 +N 展开到 5 条，再点「收起」回到 3 条', () =
   assert.equal(chipsOf(harness.current(), 'dsh-hub__chip--recent').length, 3, '收起后回到默认 3 条')
 })
 
-test('滚轮可以把顶部这排会话横向滚动（纵向滚轮折算成 scrollLeft）', () => {
+test('滚轮只滚内层 chip 区：外层固定带不滚，‹ › 按钮永远钉在最左', () => {
   const Rail = loadFactory()(reactStub(), {
     openSession: () => {},
     ackError: () => {},
     acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
   })
-  // 状态栏只在溢出时接管滚轮：边界情况由模型层纯函数保证（见 hub-scroll-test）。
+  // 边界情况由模型层纯函数保证（见 hub-scroll-test）。
   assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: 600, clientWidth: 600, scrollLeft: 0 }), 0)
   assert.equal(wheelScrollDelta({ deltaY: 120, scrollWidth: 900, clientWidth: 600, scrollLeft: 100 }), 120)
 
@@ -594,9 +628,84 @@ test('滚轮可以把顶部这排会话横向滚动（纵向滚轮折算成 scro
     useSessions: (selector) => selector({ byId: { s1: row('s1', { running: true }) }, projectionsBySession: {} }),
     useSessionStatus: (selector) => selector(new Map()),
   })
-  // 滚轮监听挂在容器上（ref 存在），容器本身横向滚动。
-  assert.equal(typeof tree.props.ref, 'object')
-  assert.match(tree.children[0].children[0], /\.dsh-hub\{[^}]*overflow-x:auto/)
+  // 外层固定带本身不滚动；内层才是 overflow-x:auto 的 chip 区。
+  const css = tree.children[0].children[0]
+  assert.match(css, /\.dsh-hub\{[^}]*display:flex/)
+  assert.doesNotMatch(css, /\.dsh-hub\{[^}]*overflow-x/)
+  assert.match(css, /\.dsh-hub__scroller\{[^}]*overflow-x:auto/)
+  assert.match(css, /\.dsh-hub__scroller\{[^}]*min-width:0/)
+
+  const railChildren = tree.children.filter((child) => child?.props?.className !== undefined)
+  assert.equal(railChildren.length, 2, '外层只放常驻导航 + 一个可滚的 chip 区')
+  assert.match(railChildren[0].props.className, /dsh-hub__navgroup/, '‹ › 挂在不滚动的外层')
+  assert.match(railChildren[1].props.className, /dsh-hub__scroller/, 'chip 区是可滚的内层')
+  const back = findNode(railChildren[0], (node) => node.props?.['data-dsh-hub-nav'] === 'back')
+  assert.ok(back !== undefined, '后退按钮在外层，横滚不会被带走')
+  assert.equal(findNode(railChildren[1], (node) => node.props?.['data-dsh-hub-nav'] === 'back'), undefined,
+    '滚动区里不该再有导航按钮')
+  // 两组条目、状态栏的 data 属性与滚轮监听 ref 各就各位。
+  const scrollerChildren = railChildren[1].children.filter((child) => child?.props?.className !== undefined)
+  assert.match(scrollerChildren[0].props.className, /dsh-hub__group--status/)
+  assert.equal(tree.props['data-dsh-session-status-hub'], 'header')
+  assert.equal(typeof tree.props.ref, 'object', '滚轮监听挂在外层 ref 上')
+  assert.equal(typeof railChildren[1].props.ref, 'object', '滚动量读 / 写的是内层 ref')
+})
+
+test('滚轮事件：监听挂外层但改的是内层 scrollLeft，并阻止外层跟随滚动', () => {
+  let prevented = 0
+  const rail = {}
+  const scroller = { scrollWidth: 900, clientWidth: 600, scrollLeft: 100 }
+  const harness = wheelReact({ rail, scroller })
+  const Rail = loadFactory()(harness.React, {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  Rail({
+    useSessions: (selector) => selector({ byId: { s1: row('s1', { running: true }) }, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const wheel = harness.listeners().find((entry) => entry.type === 'wheel')
+  assert.ok(wheel !== undefined, '应当在外层注册 wheel 监听')
+  assert.deepEqual(wheel.options, { passive: false }, '必须是非被动监听才拿得到 preventDefault')
+  wheel.handler({
+    deltaX: 0,
+    deltaY: 120,
+    deltaMode: 0,
+    preventDefault: () => { prevented += 1 },
+  })
+  assert.equal(scroller.scrollLeft, 220, '纵向滚轮折算到内层 scrollLeft')
+  assert.equal(prevented, 1, '已经吃掉事件，外层不该再跟着滚')
+  assert.equal(rail.scrollLeft, undefined, '外层固定带压根没有滚动位置')
+})
+
+test('滚轮到头 / 横向意图时不碰事件：外层固定带照常把事件让出去', () => {
+  let prevented = 0
+  const rail = {}
+  const scroller = { scrollWidth: 900, clientWidth: 600, scrollLeft: 300 }
+  const harness = wheelReact({ rail, scroller })
+  const Rail = loadFactory()(harness.React, {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  Rail({
+    useSessions: (selector) => selector({ byId: {}, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const wheel = harness.listeners().find((entry) => entry.type === 'wheel')
+  const event = (patch) => ({
+    deltaX: 0,
+    deltaY: 0,
+    deltaMode: 0,
+    preventDefault: () => { prevented += 1 },
+    ...patch,
+  })
+  wheel.handler(event({ deltaY: 120 })) // 已滚到最右边界
+  wheel.handler(event({ deltaX: 120, deltaY: 90 })) // 触控板横向意图
+  wheel.handler(event({ deltaY: -120, deltaX: 0 })) // 向上滚：确实要滚，这一条会被吃掉
+  assert.equal(scroller.scrollLeft, 180)
+  assert.equal(prevented, 1)
 })
 
 test('已归档会话不显示：组件从 useWorkspaces 的 archivedSessionIds 过滤两组', () => {
@@ -700,10 +809,11 @@ test('「状态会话」前面有前进 / 后退按钮：位置在前、无历�
   // 图标是自绘 SVG，不依赖图标库 / 字体。
   assert.equal(findNode(back, (node) => node.type === 'svg').props['aria-hidden'], 'true')
 
-  // 位置：「状态会话」组标题之前（导航组是状态栏里的第一组）。
+  // 位置：‹ › 是不滚动外层的第一个孩子，状态会话组是滚动区里的第一个组。
   const railChildren = tree.children.filter((child) => child?.props?.className !== undefined)
   assert.match(railChildren[0].props.className, /dsh-hub__navgroup/)
-  assert.match(railChildren[1].props.className, /dsh-hub__group--status/)
+  assert.match(railChildren[1].props.className, /dsh-hub__scroller/)
+  assert.match(railChildren[1].children[0].props.className, /dsh-hub__group--status/)
 })
 
 test('有历史时点 ‹ › 会分别调用 goBack / goForward，且不去确认任何状态', () => {

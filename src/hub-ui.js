@@ -17,7 +17,8 @@
  * `useWorkspaces` 只用来取 `archivedSessionIds`——会话列表行里没有「已归档」字段，
  * 归档集合只存在于工作区注册表的全局集合里，而归档的会话不该继续显示在状态栏。
  *
- * 视觉全部使用 `--dsw-alias-*` 主题令牌；颜色只用于状态点，语义与原生侧栏一致。
+ * 视觉全部使用 `--dsw-alias-*` 主题令牌；颜色只用于状态点，语义与原生侧栏一致
+ * （「运行中」蓝点另有一个静态色回落，避免老主题没有该令牌时点不可见）。
  * 可见文案一律来自 {@link HUB_STRINGS}（hub-strings.js）——组件里不再存第二份副本，
  * locale 服务不可用时直接用其中的 `zh` 回落。
  *
@@ -29,12 +30,14 @@
  *   - **最近会话**（`t('recent.label')`）：状态组里没有的会话按更新时间最多取 5 个，同样默认
  *     显示 3 条 + `+N`，作为「刚才那个会话」的回头入口；两组不会出现同一个会话。
  *
- * ## 滚轮
+ * ## 滚轮与「不参与滚动」的导航
  *
- * 整行溢出时容器是 `overflow-x: auto`（滚动条隐藏）。鼠标只有纵向滚轮，浏览器不会把它
- * 折算成横向滚动，所以组件自己在容器上挂一个非被动的 `wheel` 监听，用
- * {@link wheelScrollDelta} 把纵向滚轮换成 `scrollLeft` 增量；没溢出、横向意图、已经到头时
- * 一律不碰事件，交回外层滚动。
+ * 状态栏拆成两层：外层 `.dsh-hub` 是不滚动的固定带（`‹ ›` 导航按钮常驻左端），内层
+ * `.dsh-hub__scroller` 才是 `overflow-x: auto`（滚动条隐藏）的 chip 区。鼠标只有纵向滚轮，
+ * 浏览器不会把它折算成横向滚动，所以组件在外层挂一个非被动的 `wheel` 监听——这样鼠标停在
+ * 导航按钮上滚动时事件照样能冒泡进来——但用 {@link wheelScrollDelta} 读的是**内层**的宽度
+ * 与 `scrollLeft`，改的也是内层的 `scrollLeft`。没溢出、横向意图、已经到头时一律不碰事件，
+ * 交回宿主页面 / 祖先滚动容器；横向意图仍由浏览器原生处理。
  *
  * ## 组标题就是开关
  *
@@ -53,6 +56,8 @@
  *
  * 按钮状态完全由历史快照决定：没有可后退的会话时 `‹` 置灰并 `disabled`，同理 `›`。
  * 它是**纯导航**，不确认任何状态、不请求窗口前置，与点 chip 的跳转同一条落点。
+ * 两个按钮挂在**不滚动的外层**上：chip 区横向滚到最右时它们仍固定在最左，不会被滚出视野
+ * （详见下面「滚轮与『不参与滚动』的导航」）。
  *
  * ## 「最近会话」可以关掉
  *
@@ -135,8 +140,12 @@ function createSessionHubRail(React, deps, variant = 'header') {
   }
 
   const CSS = [
-    '.dsh-hub{display:flex;align-items:center;gap:6px;min-width:0;max-width:min(46vw,700px);overflow-x:auto;overflow-y:hidden;padding:2px 4px 2px 0;scrollbar-width:none;font:inherit}',
-    '.dsh-hub::-webkit-scrollbar{display:none}',
+    // 外层是**不滚动**的固定带：`‹ ›` 导航挂在这里，chip 区怎么横滚都带不走它。
+    // 内层才是真正可滚的区域（flex:1 吃掉剩余宽度，min-width:0 允许被压到小于内容宽）。
+    '.dsh-hub{display:flex;align-items:center;gap:6px;min-width:0;max-width:min(46vw,700px);padding:2px 4px 2px 0;font:inherit}',
+    '.dsh-hub__scroller{display:flex;align-items:center;gap:inherit;flex:1 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}',
+    // 滚动条只藏在内层：外层根本没有滚动条，浏览器也不会给它造一条。
+    '.dsh-hub__scroller::-webkit-scrollbar{display:none}',
     '.dsh-hub__label{flex:none;font-size:11px;line-height:1;color:var(--dsw-alias-label-secondary);letter-spacing:.04em;margin-right:2px;user-select:none;white-space:nowrap}',
     // 会话导航（「状态会话」前面的 ‹ ›）：纯图标按钮，尺寸与组标题对齐，
     // 让「一行高度」在视觉上保持一条线；不可用时不隐藏（隐藏会让布局跳动），
@@ -254,13 +263,19 @@ function createSessionHubRail(React, deps, variant = 'header') {
     const visibleRecentRows = recentExpanded ? recentRows : recentRows.slice(0, 3)
     const hiddenRecentCount = recentRows.length - visibleRecentRows.length
 
-    // 滚轮横向滚动：状态栏是一行横向 chip，溢出时只有纵向滚轮可用，浏览器不会自动折算。
+    // 滚轮横向滚动：chip 区是一行横向排列的条目，溢出时只有纵向滚轮可用，浏览器不会自动折算。
     // 用原生监听（`passive: false`）而不是 React 的 onWheel：React 把 wheel 挂在根上且是
-    // 被动监听，拿不到 preventDefault，滚轮会同时滚外层。
+    // 被动监听，拿不到 preventDefault，滚轮会同时带动宿主页面 / 祖先滚动容器。
+    //
+    // 监听挂在**外层固定带**上（导航按钮上的滚轮事件也冒泡得到），但读 / 写的都是内层
+    // `scrollerRef` 的尺寸与 `scrollLeft`：外层自己不滚，因此 ‹ › 永远钉在最左端。
     const railRef = typeof React.useRef === 'function' ? React.useRef(null) : null
+    const scrollerRef = typeof React.useRef === 'function' ? React.useRef(null) : null
     React.useEffect(() => {
-      const node = railRef?.current
-      if (node === null || node === undefined || typeof node.addEventListener !== 'function') return undefined
+      const rail = railRef?.current
+      const node = scrollerRef?.current
+      if (rail === null || rail === undefined || typeof rail.addEventListener !== 'function') return undefined
+      if (node === null || node === undefined) return undefined
       const onWheel = (event) => {
         const delta = wheelScrollDelta({
           deltaX: event.deltaX,
@@ -270,7 +285,7 @@ function createSessionHubRail(React, deps, variant = 'header') {
           clientWidth: node.clientWidth,
           scrollLeft: node.scrollLeft,
         })
-        // 0 = 没溢出 / 横向意图 / 已到边界：不碰事件，让外层照常滚。
+        // 0 = 没溢出 / 横向意图 / 已到边界：不碰事件，让宿主页面 / 祖先滚动容器照常滚。
         if (delta === 0) return
         node.scrollLeft += delta
         try {
@@ -279,15 +294,15 @@ function createSessionHubRail(React, deps, variant = 'header') {
           /* 被动监听环境下拿不到：位置已经改了，忽略 */
         }
       }
-      node.addEventListener('wheel', onWheel, { passive: false })
+      rail.addEventListener('wheel', onWheel, { passive: false })
       return () => {
         try {
-          node.removeEventListener('wheel', onWheel)
+          rail.removeEventListener('wheel', onWheel)
         } catch {
           /* 节点已经卸载 */
         }
       }
-    }, [railRef])
+    }, [railRef, scrollerRef])
 
     /**
      * 造一个组标题按钮：点击整组收起 / 展开，chevron 图标随之转向。
@@ -333,7 +348,10 @@ function createSessionHubRail(React, deps, variant = 'header') {
       collapsed && count > 0 ? h('span', { key: 'count', className: 'dsh-hub__count' }, String(count)) : null,
     ])
 
+    // 外层 children：样式 + 常驻导航 + 一个可横滚的 chip 区（两组条目都放进后者）。
+    // 导航按钮**不能**放进滚动区，否则滚到右侧时 ‹ › 会被一起滚出视野。
     const children = [h('style', { key: 'style' }, CSS)]
+    const scrollerChildren = []
 
     // ---- 会话导航：「状态会话」前一排 ‹ ›，沿访问历史在对话之间来回跳 ----
     //
@@ -445,7 +463,7 @@ function createSessionHubRail(React, deps, variant = 'header') {
         }, t('collapse')))
       }
     }
-    children.push(h('span', {
+    scrollerChildren.push(h('span', {
       key: 'status',
       className: 'dsh-hub__group dsh-hub__group--status',
       role: 'group',
@@ -493,7 +511,7 @@ function createSessionHubRail(React, deps, variant = 'header') {
           }, t('collapse')))
         }
       }
-      children.push(h('span', {
+      scrollerChildren.push(h('span', {
         key: 'recent',
         className: 'dsh-hub__group dsh-hub__group--recent',
         role: 'group',
@@ -501,10 +519,18 @@ function createSessionHubRail(React, deps, variant = 'header') {
       }, recentChildren))
     }
 
+    // 两组条目都装进内层滚动区：只有它会横滚，导航按钮留在外层固定带上。
+    children.push(h('div', {
+      key: 'scroller',
+      className: 'dsh-hub__scroller',
+      'data-dsh-hub-scroller': variant,
+      ...(scrollerRef === null ? {} : { ref: scrollerRef }),
+    }, scrollerChildren))
+
     return h('div', {
       className: `dsh-hub dsh-hub--${variant}`,
       'data-dsh-session-status-hub': variant,
-      // 滚轮横向滚动的监听挂在这个节点上（ref 只用来 addEventListener，不参与渲染）。
+      // 滚轮监听挂在外层（导航按钮上的滚轮也管用），ref 只用来 addEventListener，不参与渲染。
       ...(railRef === null ? {} : { ref: railRef }),
       // 无障碍名称交给两组各自的 aria-label（状态会话 / 最近会话），外层不再重复一份，
       // 否则读屏会把同一句话念两遍。
