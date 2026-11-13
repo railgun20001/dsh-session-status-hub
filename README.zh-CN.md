@@ -24,7 +24,8 @@
 1. **标题栏状态栏**：按 `红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）> 灰（未开始）` 排序，
    默认只显示最需要你的 3 条，点一下直接跳到该对话；输入框里打了字但还没发送的会话会以灰色
    「未开始」出现。这一组叫「状态会话」，后面还跟一组「最近会话」（状态消失后按更新时间最多
-   取 5 个、默认 3 条 + `+N`），用来一键回到刚才那个对话；
+   取 5 个、默认 3 条 + `+N`），用来一键回到刚才那个对话；**最左端还有 `‹` `›` 两个按钮**，
+   沿「会话访问历史」在各个对话之间前进 / 后退（DSH 没有 URL 路由，浏览器返回键帮不上忙）；
 2. **任务栏状态点**：用 `ITaskbarList3.SetOverlayIcon` 在 DSH 任务栏图标上打红 / 黄 / 绿点，
    窗口最小化或被压在别的应用后面时依然看得见；
 3. **Windows 通知**：完成 / 失败 / 需要你回答时弹系统通知，标题带颜色 emoji，
@@ -212,6 +213,11 @@ localStorage["dsh.conversation.<sessionId>"] = {
 - **一行两组，中间一条竖直分隔线**：前面是「状态会话」（上面五类，默认显示优先级最高的 3 条 +
   `+N`），后面是「最近会话」（模型层最多给 5 个，同样默认 3 条 + `+N`；没有状态点、用次级文字色，
   视觉上明显弱于状态组）；
+- **「状态会话」前面是 `‹` `›` 两个图标按钮**（会话前进 / 后退）：DSH 的会话切换是应用内状态，
+  **没有 URL 路由**，浏览器自带的返回键回到的是「上一次整页」而不是「上一个对话」。这两个按钮
+  沿插件自己记的「会话访问历史」前后跳，语义与浏览器一致：跳过一个会话后再打开新会话，前进分支
+  被截断。没有可去的地方时按钮置灰 + `disabled`（位置固定，不会让整排 chip 左右跳）；
+  历史只在本次页面内存里，刷新（`Ctrl+R`）后从当前会话重新开始；
 - **一组标题就是开关**：`状态会话` / `最近会话` 两个组标题都是按钮，点一下整组收起（只剩标题 +
   小号数字提示还有几条），再点一下展开；标题带一个自绘 chevron 图标，展开时朝下 `⌄`、收起时
   旋转 90° 朝右 `›`，并带 `cursor: pointer`、hover 底色与 `focus-visible` 描边——一眼看得出手感。
@@ -386,6 +392,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-identity.js      插件 id / 投影键 / 路由前缀 / 签名头 / 存储键（两半共用）
 │   ├── hub-strings.js       界面文案 zh/en（单一来源）
 │   ├── hub-model.js         状态栏 / 任务栏纯逻辑（可单测）
+│   ├── hub-history.js       会话导航（前进 / 后退）历史（纯逻辑，可单测）
 │   ├── hub-drafts.js        未发送草稿的读取与归一化（纯逻辑，可单测）
 │   ├── notify-core.js       通知边沿引擎（纯逻辑，可单测）
 │   ├── hub-scroll.js        侧栏会话行定位、滚动与揭示控制器（可单测）
@@ -397,7 +404,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-slots.js         三处插槽注册
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    174 个用例（node:test，零依赖）
+├── test/                    190 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -504,7 +511,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 174 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 190 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
@@ -526,6 +533,9 @@ __DSH_SESSION_HUB__.getLiveNotifications() // 仍然挂在系统里、可被自�
 __DSH_SESSION_HUB__.getNotifyLog()      // 最近 20 条通知的落地结果（shown / failed / no-event / permission / deduped）
 __DSH_SESSION_HUB__.clearNotifyLog()    // 清空落地日志
 __DSH_SESSION_HUB__.revealSessionRow('session-…') // 'session' / 'workspace' / null：验证左侧列表能滚到该会话行（不跳转）
+__DSH_SESSION_HUB__.getNavHistory()    // { entries, index, canBack, canForward }：状态栏左端 ‹ › 背后的会话访问历史
+__DSH_SESSION_HUB__.goBack()           // 后退一个会话（与 ‹ 按钮同一条路径），返回是否真的跳了
+__DSH_SESSION_HUB__.goForward()        // 前进一个会话（与 › 按钮同一条路径）
 __DSH_SESSION_HUB__.pingHost()         // 'present' / 'absent' / 'unknown'
 ```
 
@@ -576,6 +586,9 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
    标题后的 chevron 从 `⌄` 转到 `›`、后面多出小号数字，再点一下恢复。
 13. 开到状态栏横向溢出（多个会话 / 把窗口拉窄）→ 鼠标停在状态栏上滚轮，这一排应当**横向滚动**；
    滚到最右后继续滚轮，事件交回外层（不出现「卡住不动」）。触控板左右滑 / Shift+滚轮保持原生行为。
+14. 依次点开 A → B → C 三个会话，然后点状态栏最左端的 `‹` → 回到 B，再点 `‹` 回到 A
+   （此时 `‹` 置灰），点 `›` 又回到 B / C；在 B 的位置直接点开新会话 D，`›` 应当置灰
+   （前进分支被截断）。`__DSH_SESSION_HUB__.getNavHistory()` 能看到 `entries` 与 `index` 的变化。
 
 ---
 

@@ -664,3 +664,94 @@ test('点击「最近会话」chip 只跳转，不去确认报错；没有可回
   assert.deepEqual(chipsOf(withBlank, 'dsh-hub__chip--recent'), [])
   assert.match(collectText(withBlank).join('|'), /全部空闲/)
 })
+
+test('「状态会话」前面有前进 / 后退按钮：位置在前、无历史时置灰禁用', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+    // 历史只有一条（当前会话），两个方向都没有可去的地方。
+    history: { subscribe: () => () => {}, getSnapshot: () => ({ entries: ['s1'], index: 0, canBack: false, canForward: false }) },
+    goBack: () => true,
+    goForward: () => true,
+  })
+  const tree = Rail({
+    useSessions: (selector) => selector({ byId: { s1: row('s1', { running: true }) }, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+
+  const back = findNode(tree, (node) => node.props?.['data-dsh-hub-nav'] === 'back')
+  const forward = findNode(tree, (node) => node.props?.['data-dsh-hub-nav'] === 'forward')
+  assert.ok(back !== undefined, '应当渲染后退按钮')
+  assert.ok(forward !== undefined, '应当渲染前进按钮')
+  assert.equal(back.props.disabled, true)
+  assert.equal(forward.props.disabled, true)
+  assert.equal(back.props.title, '后退会话')
+  assert.equal(forward.props.title, '前进会话')
+  // 图标是自绘 SVG，不依赖图标库 / 字体。
+  assert.equal(findNode(back, (node) => node.type === 'svg').props['aria-hidden'], 'true')
+
+  // 位置：「状态会话」组标题之前（导航组是状态栏里的第一组）。
+  const railChildren = tree.children.filter((child) => child?.props?.className !== undefined)
+  assert.match(railChildren[0].props.className, /dsh-hub__navgroup/)
+  assert.match(railChildren[1].props.className, /dsh-hub__group--status/)
+})
+
+test('有历史时点 ‹ › 会分别调用 goBack / goForward，且不去确认任何状态', () => {
+  const calls = []
+  const acked = []
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: (id, seq) => acked.push([id, seq]),
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+    history: { subscribe: () => () => {}, getSnapshot: () => ({ entries: ['a', 'b', 'c'], index: 1, canBack: true, canForward: true }) },
+    goBack: () => { calls.push('back'); return true },
+    goForward: () => { calls.push('forward'); return true },
+  })
+  const tree = Rail({
+    useSessions: (selector) => selector({ byId: { b: row('b') }, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+
+  const back = findNode(tree, (node) => node.props?.['data-dsh-hub-nav'] === 'back')
+  const forward = findNode(tree, (node) => node.props?.['data-dsh-hub-nav'] === 'forward')
+  assert.equal(back.props.disabled, false)
+  assert.equal(forward.props.disabled, false)
+  back.props.onClick()
+  forward.props.onClick()
+  assert.deepEqual(calls, ['back', 'forward'])
+  assert.deepEqual(acked, [], '导航按钮是纯跳转，不确认任何状态')
+})
+
+test('没有注入历史仓库与动作时按钮照常渲染但不可点（不会报错）', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  const tree = Rail({
+    useSessions: (selector) => selector({ byId: { s1: row('s1') }, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const back = findNode(tree, (node) => node.props?.['data-dsh-hub-nav'] === 'back')
+  assert.ok(back !== undefined)
+  assert.equal(back.props.disabled, true)
+  assert.equal(back.props.onClick, undefined)
+})
+
+test('导航按钮的视觉线索：hover 底色、focus 描边、禁用态降透明度', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  const tree = Rail({
+    useSessions: (selector) => selector({ byId: {}, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const css = tree.children[0].children[0]
+  assert.match(css, /\.dsh-hub__navbtn\{[^}]*cursor:pointer/)
+  assert.match(css, /\.dsh-hub__navbtn:hover:not\(:disabled\)\{[^}]*background:var\(--dsw-alias-bg-layer-2\)/)
+  assert.match(css, /\.dsh-hub__navbtn:focus-visible\{/)
+  assert.match(css, /\.dsh-hub__navbtn:disabled\{[^}]*opacity:/)
+})

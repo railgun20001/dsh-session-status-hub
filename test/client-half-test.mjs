@@ -1394,3 +1394,142 @@ test('诊断入口可单独验证列表揭示（不跳转）', async () => {
     harness.restore()
   }
 })
+
+// ---- 会话导航：前进 / 后退 ----
+
+/**
+ * 把「主视图会话」从 from 换到 to（`retainedBy.mainView` 只有一行是 1）。
+ * @param {object} harness harness。
+ * @param {string} from 当前会话 id。
+ * @param {string} to 目标会话 id。
+ */
+function switchMainView(harness, from, to) {
+  harness.setRow(from, { retainedBy: { mainView: 0 } })
+  harness.setRow(to, { retainedBy: { mainView: 1 } })
+}
+
+test('切换会话会记进导航历史，goBack / goForward 沿历史跳转', async () => {
+  const harness = await createHarness({
+    sessions: [
+      sessionRow('s1', { retainedBy: { mainView: 1 } }),
+      sessionRow('s2'),
+      sessionRow('s3'),
+    ],
+  })
+  const opened = []
+  harness.ctx.get = workspaceCtx(harness, opened)
+  try {
+    await settle()
+    const api = globalThis.__DSH_SESSION_HUB__
+    // 启动时就把「当前正在看的会话」记进历史。
+    assert.deepEqual(api.getNavHistory(), { entries: ['s1'], index: 0, canBack: false, canForward: false })
+
+    switchMainView(harness, 's1', 's2')
+    await settle()
+    switchMainView(harness, 's2', 's3')
+    await settle()
+    assert.deepEqual(api.getNavHistory(), { entries: ['s1', 's2', 's3'], index: 2, canBack: true, canForward: false })
+
+    // 后退：跳回 s2（只做应用内跳转，不请求窗口前置 → openSession 走 uiWorkspace）。
+    assert.equal(api.goBack(), true)
+    await settle()
+    assert.deepEqual(opened, ['s2'])
+    assert.deepEqual(api.getNavHistory(), { entries: ['s1', 's2', 's3'], index: 1, canBack: true, canForward: true })
+
+    // 前进：回到 s3。
+    assert.equal(api.goForward(), true)
+    await settle()
+    assert.deepEqual(opened, ['s2', 's3'])
+    assert.deepEqual(api.getNavHistory(), { entries: ['s1', 's2', 's3'], index: 2, canBack: true, canForward: false })
+
+    // 到头了：再前进没有落点，不发跳转。
+    assert.equal(api.goForward(), false)
+    assert.deepEqual(opened, ['s2', 's3'])
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('后退落地前观察到的旧快照不会截断前进分支', async () => {
+  const harness = await createHarness({
+    sessions: [
+      sessionRow('s1', { retainedBy: { mainView: 1 } }),
+      sessionRow('s2'),
+      sessionRow('s3'),
+    ],
+  })
+  const opened = []
+  harness.ctx.get = workspaceCtx(harness, opened)
+  try {
+    await settle()
+    const api = globalThis.__DSH_SESSION_HUB__
+    switchMainView(harness, 's1', 's2')
+    await settle()
+    switchMainView(harness, 's2', 's3')
+    await settle()
+
+    // 真实的外壳会在 openSession 之后才把主视图切过去；这里模拟「跳转已发起、
+    // 列表快照还没变」的那一段：期间反复观察到的仍是 s3。
+    api.goBack()
+    await settle()
+    assert.deepEqual(api.getNavHistory().entries, ['s1', 's2', 's3'], '前进分支必须还在')
+
+    // 落地：主视图切到 s2，历史不应因此多记一条 s2。
+    switchMainView(harness, 's3', 's2')
+    await settle()
+    assert.deepEqual(api.getNavHistory(), { entries: ['s1', 's2', 's3'], index: 1, canBack: true, canForward: true })
+
+    // 落地后用户又去了 s4：前进分支被截断（与浏览器一致）。
+    harness.setRow('s4', {})
+    await settle()
+    switchMainView(harness, 's2', 's4')
+    await settle()
+    assert.deepEqual(api.getNavHistory(), { entries: ['s1', 's2', 's4'], index: 2, canBack: true, canForward: false })
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('历史里的会话已经不在目录时，后退不跳转也不移动游标', async () => {
+  const harness = await createHarness({
+    sessions: [
+      sessionRow('s1', { retainedBy: { mainView: 1 } }),
+      sessionRow('s2'),
+    ],
+  })
+  const opened = []
+  /** 从会话目录里「消失」的会话 id（模拟被删除 / 已经不在列表里）。 */
+  const hidden = new Set()
+  harness.ctx.get = (serviceName) => {
+    if (serviceName === 'sessions') {
+      const snapshot = harness.listStore.getSnapshot()
+      const byId = {}
+      for (const [id, row] of Object.entries(snapshot.byId)) {
+        if (!hidden.has(id)) byId[id] = row
+      }
+      return { list: { getSnapshot: () => ({ ...snapshot, byId }), subscribe: harness.listStore.subscribe } }
+    }
+    if (serviceName === 'uiSession') return { sessionStatus: harness.statusStore }
+    if (serviceName === 'uiWorkspace') return { openSession: (id) => opened.push(id) }
+    return undefined
+  }
+  try {
+    await settle()
+    const api = globalThis.__DSH_SESSION_HUB__
+    switchMainView(harness, 's1', 's2')
+    await settle()
+    assert.deepEqual(api.getNavHistory(), { entries: ['s1', 's2'], index: 1, canBack: true, canForward: false })
+
+    // s1 从目录里消失之后，后退没有落点：不跳转、游标也不动。
+    hidden.add('s1')
+    await settle()
+    assert.equal(api.goBack(), false, '目标会话不在目录里时放弃跳转')
+    assert.deepEqual(opened, [])
+    assert.deepEqual(api.getNavHistory(), { entries: ['s1', 's2'], index: 1, canBack: true, canForward: false })
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})

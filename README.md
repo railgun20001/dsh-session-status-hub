@@ -36,7 +36,9 @@ is waiting for my answer?**
    Session. A Session whose composer holds an unsent draft appears as a gray "Not started" chip.
    That group is labelled **Status Sessions**; a second group after it — **Recent Sessions**
    (up to 5 of the most recently updated Sessions that are not in the status group, 3 visible +
-   `+N`) — is the one-click way back to the conversation you just left.
+   `+N`) — is the one-click way back to the conversation you just left. The very left of the rail
+   holds two icon buttons, `‹` / `›`, that step back and forth through the **Session visit
+   history** (DSH has no URL routing, so the browser's own back button cannot do this).
 2. **A taskbar status dot** via `ITaskbarList3.SetOverlayIcon` — red / yellow / green on the
    DSH taskbar button, still visible while the window is minimized or buried behind other
    apps.
@@ -240,7 +242,7 @@ state facts ("this turn finished and you haven't looked"), not interruptions.
 ## Diagnostics
 
 ```powershell
-npm run check     # 1) lib/client.js matches src/  2) 159 test cases
+npm run check     # 1) lib/client.js matches src/  2) 190 test cases
 ```
 
 ```js
@@ -249,6 +251,9 @@ __DSH_SESSION_HUB__.getRows()            // current rail rows
 __DSH_SESSION_HUB__.getTaskbarState()    // red / yellow / green / none
 __DSH_SESSION_HUB__.getDrafts()          // { [sessionId]: { chars } } — sessions with an unsent draft (counts only, no text)
 __DSH_SESSION_HUB__.getLocalUnread()     // plugin-side "finished in background, unseen" records
+__DSH_SESSION_HUB__.getNavHistory()      // { entries, index, canBack, canForward } — the history behind the ‹ › buttons
+__DSH_SESSION_HUB__.goBack()             // step back one Session (same path as the ‹ button)
+__DSH_SESSION_HUB__.goForward()          // step forward one Session (same path as the › button)
 __DSH_SESSION_HUB__.testNotification()   // fire a test toast; clicking it should jump back
 __DSH_SESSION_HUB__.getLiveNotifications() // toasts still on screen / in Action Center that auto-dismissal can clear
 __DSH_SESSION_HUB__.getNotifyLog()       // last 20 notification landing results
@@ -277,6 +282,7 @@ dsh-session-status-hub/
 ├── src/hub-identity.js      plugin id / projection key / route prefix / signature header / storage keys (shared)
 ├── src/hub-strings.js       UI strings zh/en (single source)
 ├── src/hub-model.js         rail + taskbar logic (pure, unit-testable)
+├── src/hub-history.js       Session visit history for the ‹ › navigation buttons (pure, unit-testable)
 ├── src/hub-drafts.js        unsent-draft read/normalize (pure, unit-testable)
 ├── src/notify-core.js       notification edge engine (pure, unit-testable)
 ├── src/hub-scroll.js        sidebar row reveal/scroll + reveal controller (unit-testable)
@@ -288,7 +294,7 @@ dsh-session-status-hub/
 ├── src/hub-slots.js         slot registration
 ├── src/client-main.js       wiring: services → model → notifications / rail / taskbar
 ├── build/bundle.mjs         inlines src/ in order into one classic-script bundle
-├── test/                    159 node:test cases, zero dependencies
+├── test/                    190 node:test cases, zero dependencies
 ├── locale/{zh,en}.json      plugin manager title and description
 ├── icon.svg                 plugin icon
 ├── cordis.patch.yml         bundle patch inserting the session-hub row

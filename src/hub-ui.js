@@ -45,6 +45,15 @@
  * 注意它与 `+N` 是两件事：`+N` 改的是「这一组显示 3 条还是全部」，
  * 组标题改的是「这一组还显示不显示」。收起状态只活在组件内存里（刷新页面回到默认展开）。
  *
+ * ## 「状态会话」前面的会话导航
+ *
+ * 状态栏最左端（`状态会话` 标题之前）是两个图标按钮：`‹` 后退 / `›` 前进，沿
+ * 「会话访问历史」在对话之间来回跳——DSH 没有 URL 路由，浏览器自带的返回键帮不上忙，
+ * 这里补的就是那套语义（历史与游标住在 hub-history.js，组件只读快照）。
+ *
+ * 按钮状态完全由历史快照决定：没有可后退的会话时 `‹` 置灰并 `disabled`，同理 `›`。
+ * 它是**纯导航**，不确认任何状态、不请求窗口前置，与点 chip 的跳转同一条落点。
+ *
  * @module dsh-session-status-hub/hub-ui
  */
 
@@ -70,7 +79,10 @@ function createFallbackT(dict) {
  *   acks: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
  *   unread?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
  *   drafts?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
- * }} deps 由 client-main 注入的动作、确认表、「后台完成」记账与草稿表（后两者可选）。
+ *   history?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
+ *   goBack?: () => boolean,
+ *   goForward?: () => boolean,
+ * }} deps 由 client-main 注入的动作、确认表、「后台完成」记账、草稿表与会话导航历史（后三者可选）。
  * @param {'header'|'chrome'} [variant] 渲染位置：会话标题前，或 Windows 顶栏菜单之后。
  * @returns {Function} React 函数组件。
  */
@@ -86,6 +98,9 @@ function createSessionHubRail(React, deps, variant = 'header') {
   const EMPTY_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_UNREAD }
   /** 草稿表的缺省仓库：没有注入时组件照常渲染，只是没有「未开始」灰点。 */
   const EMPTY_DRAFT_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_DRAFTS }
+  /** 会话导航历史的缺省快照：没有注入时两个按钮都置灰（没有可去的地方）。 */
+  const EMPTY_NAV = Object.freeze({ entries: Object.freeze([]), index: -1, canBack: false, canForward: false })
+  const EMPTY_NAV_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_NAV }
 
   /** 文案回落：插槽没有绑定 locale 时也能显示中文。 */
   const fallbackT = createFallbackT(HUB_STRINGS.zh)
@@ -113,6 +128,15 @@ function createSessionHubRail(React, deps, variant = 'header') {
     '.dsh-hub{display:flex;align-items:center;gap:6px;min-width:0;max-width:min(46vw,700px);overflow-x:auto;overflow-y:hidden;padding:2px 4px 2px 0;scrollbar-width:none;font:inherit}',
     '.dsh-hub::-webkit-scrollbar{display:none}',
     '.dsh-hub__label{flex:none;font-size:11px;line-height:1;color:var(--dsw-alias-label-secondary);letter-spacing:.04em;margin-right:2px;user-select:none;white-space:nowrap}',
+    // 会话导航（「状态会话」前面的 ‹ ›）：纯图标按钮，尺寸与组标题对齐，
+    // 让「一行高度」在视觉上保持一条线；不可用时不隐藏（隐藏会让布局跳动），
+    // 只降透明度并 disabled，一眼能看出「这里有功能，但现在没得退」。
+    '.dsh-hub__navgroup{display:inline-flex;align-items:center;gap:2px;flex:none}',
+    '.dsh-hub__navbtn{flex:none;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background .12s ease,color .12s ease,border-color .12s ease,opacity .12s ease}',
+    '.dsh-hub__navbtn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}',
+    '.dsh-hub__navbtn:active:not(:disabled){background:var(--dsw-alias-bg-layer-1)}',
+    '.dsh-hub__navbtn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+    '.dsh-hub__navbtn:disabled{opacity:.4;cursor:default}',
     // 组标题本身就是开关：点一下整组收起 / 展开。因此它必须有可点的手感——
     // cursor:pointer + hover 底色与文字提亮 + focus-visible 描边，缺一样用户就只会去点 chip。
     '.dsh-hub__labelbtn{display:inline-flex;align-items:center;gap:3px;flex:none;height:22px;margin-right:2px;padding:0 5px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:1;letter-spacing:.04em;white-space:nowrap;cursor:pointer;user-select:none;transition:background .12s ease,color .12s ease,border-color .12s ease}',
@@ -150,6 +174,8 @@ function createSessionHubRail(React, deps, variant = 'header') {
     '.dsh-hub--chrome{position:fixed;top:0;left:calc(var(--dsh-windows-menu-start,48px) + 108px);height:var(--dsh-windows-titlebar-height,40px);max-width:calc(100vw - 460px);padding:0 8px 0 0;gap:4px;z-index:1090;pointer-events:auto;-webkit-app-region:no-drag}',
     '.dsh-hub--chrome .dsh-hub__chip,.dsh-hub--chrome .dsh-hub__idle,.dsh-hub--chrome .dsh-hub__more{height:24px;padding:0 8px;font-size:11px;background:var(--dsw-specific-sidebar-fill)}',
     '.dsh-hub--chrome .dsh-hub__chip{max-width:180px}',
+    // 顶栏变体里控件整体矮 2px，导航按钮跟着收，保证与 chip 中线对齐。
+    '.dsh-hub--chrome .dsh-hub__navbtn{width:20px;height:20px}',
     '.dsh-hub--chrome .dsh-hub__label{font-size:11px}',
     '.dsh-hub--chrome .dsh-hub__state{font-size:9px}',
     // 「最近会话」chip：没有状态点，只用次级文字色，视觉上明显弱于状态会话组——
@@ -181,6 +207,8 @@ function createSessionHubRail(React, deps, variant = 'header') {
     const localUnread = useSnapshot(deps.unread ?? EMPTY_STORE)
     // 草稿表只带 `{ chars }`（不含正文）；没有注入时退化为空表。
     const drafts = useSnapshot(deps.drafts ?? EMPTY_DRAFT_STORE)
+    // 会话导航历史：只读快照，用来决定 ‹ › 两个按钮此刻可不可点。
+    const nav = useSnapshot(deps.history ?? EMPTY_NAV_STORE)
     const rows = deriveHubRows({
       list,
       statuses,
@@ -292,6 +320,65 @@ function createSessionHubRail(React, deps, variant = 'header') {
     ])
 
     const children = [h('style', { key: 'style' }, CSS)]
+
+    // ---- 会话导航：「状态会话」前一排 ‹ ›，沿访问历史在对话之间来回跳 ----
+    //
+    // DSH 没有 URL 路由，浏览器自带的返回键回到的是「上一次整页」，不是「上一个对话」；
+    // 这里补上浏览器语义：每打开一个会话就压一次历史（记录点在 client-main 的观察里，
+    // 因此侧栏点击 / chip / 通知点击都会进历史），按钮只负责沿游标前后移动。
+    //
+    // 按钮**永远渲染**：不可用时置灰 + disabled，位置固定，不会因为「历史为空时少画两个
+    // 按钮」让整排 chip 左右跳动。
+    const goBack = typeof deps.goBack === 'function' ? deps.goBack : null
+    const goForward = typeof deps.goForward === 'function' ? deps.goForward : null
+
+    /**
+     * 造一个导航图标按钮。
+     *
+     * @param {string} key React key。
+     * @param {'back'|'forward'} direction 方向（同时写进 data 属性，便于诊断与测试定位）。
+     * @param {string} label 悬停提示与无障碍名称。
+     * @param {boolean} enabled 此刻是否可点（由历史快照的 canBack / canForward 决定）。
+     * @param {(() => void)|null} onClick 点击回调；不可用时为 null。
+     * @returns {object} 按钮节点。
+     */
+    const navButton = (key, direction, label, enabled, onClick) => h('button', {
+      key,
+      type: 'button',
+      className: 'dsh-hub__navbtn',
+      'data-dsh-hub-nav': direction,
+      title: label,
+      'aria-label': label,
+      disabled: !enabled,
+      onClick: enabled ? onClick : undefined,
+    }, [
+      // 自绘 chevron：与组标题同一个套路——不引图标库、不依赖字体，只换 path。
+      h('svg', {
+        key: 'icon',
+        viewBox: '0 0 16 16',
+        width: 12,
+        height: 12,
+        'aria-hidden': 'true',
+        focusable: 'false',
+      }, h('path', {
+        d: direction === 'back' ? 'M10 3L5 8l5 5' : 'M6 3l5 5-5 5',
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 1.8,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+      })),
+    ])
+
+    children.push(h('span', {
+      key: 'nav',
+      className: 'dsh-hub__navgroup',
+      role: 'group',
+      'aria-label': t('nav.aria'),
+    }, [
+      navButton('nav-back', 'back', t('nav.back'), nav?.canBack === true && goBack !== null, goBack),
+      navButton('nav-forward', 'forward', t('nav.forward'), nav?.canForward === true && goForward !== null, goForward),
+    ]))
 
     // ---- 第一组：状态会话（需要你处理 / 正在跑的会话 + 未发送草稿）----
     const statusChildren = [

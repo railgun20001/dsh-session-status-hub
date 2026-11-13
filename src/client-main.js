@@ -25,6 +25,7 @@
  * | 状态栏与行悬停组件 | hub-ui.js |
  * | 插槽注册 | hub-slots.js |
  * | 状态与优先级模型 | hub-model.js |
+ * | 会话导航（前进 / 后退）历史 | hub-history.js |
  * | 未发送草稿的读取 | hub-drafts.js |
  * | 通知边沿引擎 | notify-core.js |
  * | 侧栏滚动 | hub-scroll.js |
@@ -178,6 +179,15 @@ function apply(ctx) {
    */
   const drafts = createSnapshotStore({})
 
+  /**
+   * 会话导航历史（状态栏左端 ‹ › 两个按钮背后的那本账）。
+   *
+   * 记录点只有一个：每次观察时把「当前主视图会话」交给它（见 `tick`）。侧栏点击、
+   * 状态栏 chip、通知点击、宿主快捷键最终都会改变 `retainedBy.mainView`，所以不需要在
+   * 每个跳转分支里各记一次。详见 hub-history 的模块注释。
+   */
+  const navHistory = createNavHistory({ limit: MAX_NAV_ENTRIES })
+
   let tickTimer = null
   let persistTimer = null
   let draftInputTimer = null
@@ -302,6 +312,28 @@ function apply(ctx) {
     scheduleTick()
   }
 
+  /**
+   * 沿「会话导航历史」走一步（状态栏左端 ‹ › 两个按钮的落点）。
+   *
+   * 先 `peek` 再看目标会话是否还在目录里：历史里可能有已经被删除的会话，此时直接放弃
+   * 这次跳转（游标不前移，按钮保持原样），比跳到一个空会话更合理。跳转本身走
+   * {@link openSession}，因此滚动侧栏、清掉待查看记账、撤回通知等行为与点 chip 完全一致；
+   * `raise: false` 同样适用——用户点按钮时窗口就在前台。
+   *
+   * @param {-1|1} delta 负数后退，正数前进。
+   * @returns {boolean} 是否真的发起了跳转。
+   */
+  const navigateHistory = (delta) => {
+    const target = navHistory.peek(delta)
+    if (target === null) return false
+    const byId = safeGet('sessions')?.list?.getSnapshot?.()?.byId
+    if (byId === null || byId === undefined || !Object.hasOwn(byId, target)) return false
+    const moved = delta < 0 ? navHistory.back() : navHistory.forward()
+    if (moved === null) return false
+    openSession(moved, { raise: false })
+    return true
+  }
+
   // ---- 通知落地：tag 哈希 / 跨标签页去重 / 落地诊断日志 ----
   const notifySink = createNotifySink({
     pluginId: PLUGIN_ID,
@@ -422,6 +454,9 @@ function apply(ctx) {
       // 否则会在同一帧里得出互相矛盾的结论。
       const focused = isFocused(config)
       const currentSessionId = currentSessionIdOf(listState)
+      // 会话导航历史：把「当前主视图会话」记进历史（幂等，同一会话重复观察不产生新条目）。
+      // 放在这里而不是跳转分支里，侧栏点击 / chip / 通知点击都会被记上。
+      navHistory.observe(currentSessionId)
 
       // 1) 通知边沿。它同时给出「这一轮结束了」的事实（result.completions），
       //    所以必须排在状态栏推导之前——补记的「待查看」要在同一帧里点亮绿点 / 绿灯。
@@ -647,7 +682,17 @@ function apply(ctx) {
   registerHubSlots({
     ctx,
     pluginId: PLUGIN_ID,
-    deps: { openSession, ackError, acks, localUnread, drafts },
+    deps: {
+      openSession,
+      ackError,
+      acks,
+      localUnread,
+      drafts,
+      // 「状态会话」前面的前进 / 后退按钮：快照仓库 + 两个动作。
+      history: navHistory,
+      goBack: () => navigateHistory(-1),
+      goForward: () => navigateHistory(1),
+    },
   })
 
   /** 页面卸载时清掉任务栏状态点，避免红灯留在任务栏上。 */
@@ -742,6 +787,24 @@ function apply(ctx) {
     getDrafts: () => ({ ...drafts.getSnapshot() }),
     /** @returns {Array<object>} 当前状态栏行。 */
     getRows: () => JSON.parse(JSON.stringify(lastRows)),
+    /**
+     * 会话导航历史快照（「状态会话」前面 ‹ › 两个按钮背后的账本）。
+     *
+     * 形状 `{ entries, index, canBack, canForward }`：`entries` 是访问过的会话 id，
+     * `index` 是游标位置。用它可以直接验证「切了几个会话之后，后退能不能回到上一个」。
+     * @returns {object} 历史快照。
+     */
+    getNavHistory: () => JSON.parse(JSON.stringify(navHistory.getSnapshot())),
+    /**
+     * 后退一个会话（与状态栏左端 ‹ 按钮同一条路径）。
+     * @returns {boolean} 是否真的发起了跳转。
+     */
+    goBack: () => navigateHistory(-1),
+    /**
+     * 前进一个会话（与状态栏左端 › 按钮同一条路径）。
+     * @returns {boolean} 是否真的发起了跳转。
+     */
+    goForward: () => navigateHistory(1),
     /** @returns {string} 当前聚合任务栏状态。 */
     getTaskbarState: () => aggregateTaskbarState(lastRows),
     /**

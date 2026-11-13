@@ -10,6 +10,7 @@
  *
  * 键的命名约定：
  *   - `label` / `idle` / `aria` / `more` / `collapse`：状态栏容器自身（「状态会话」组）
+ *   - `nav.*`：「状态会话」前面的会话前进 / 后退按钮（悬停提示与无障碍名称）
  *   - `recent.*`：「最近会话」组（组标题、无障碍标签）
  *   - `group.expand` / `group.collapse`：组标题开关的悬停提示与无障碍名称（`{label}` 是组名）
  *   - `blank.title`：空白「新会话」占位行在状态栏里的标题
@@ -31,6 +32,9 @@ export const HUB_STRINGS = Object.freeze({
   zh: Object.freeze({
     label: '状态会话',
     idle: '全部空闲',
+    'nav.aria': '会话导航',
+    'nav.back': '后退会话',
+    'nav.forward': '前进会话',
     'recent.label': '最近会话',
     'recent.aria': '最近会话：{count} 个',
     'recent.more': '还有 {count} 个最近会话',
@@ -52,6 +56,9 @@ export const HUB_STRINGS = Object.freeze({
   en: Object.freeze({
     label: 'Status Sessions',
     idle: 'All idle',
+    'nav.aria': 'Session navigation',
+    'nav.back': 'Back to the previous Session',
+    'nav.forward': 'Forward to the next Session',
     'recent.label': 'Recent Sessions',
     'recent.aria': 'Recent Sessions: {count}',
     'recent.more': '{count} more Recent Sessions',

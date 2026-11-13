@@ -30,6 +30,9 @@
  *   acks: object,
  *   localUnread: object,
  *   drafts: object,
+ *   history?: object,
+ *   goBack?: () => boolean,
+ *   goForward?: () => boolean,
  * }} options.deps 组件要用的动作与状态仓库。
  * @returns {void}
  */
@@ -61,6 +64,10 @@ export function registerHubSlots({ ctx, pluginId, deps }) {
           acks: deps.acks,
           unread: deps.localUnread,
           drafts: deps.drafts,
+          // 会话导航：「状态会话」前面的 ‹ › 两个按钮读历史快照、调这两个动作。
+          history: deps.history,
+          goBack: deps.goBack,
+          goForward: deps.goForward,
         }
         const RailHeader = createSessionHubRail(React, railDeps, 'header')
         const RailChrome = createSessionHubRail(React, railDeps, 'chrome')
