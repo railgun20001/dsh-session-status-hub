@@ -54,6 +54,12 @@
  * 按钮状态完全由历史快照决定：没有可后退的会话时 `‹` 置灰并 `disabled`，同理 `›`。
  * 它是**纯导航**，不确认任何状态、不请求窗口前置，与点 chip 的跳转同一条落点。
  *
+ * ## 「最近会话」可以关掉
+ *
+ * 第二组是否显示由配置里的 `showRecentSessions` 决定（默认显示），设置入口在
+ * **插件详情页的设置区块**（{@link createHubSettingsPanel}，注册进 `plugins.bundle.config`）。
+ * 关掉后只渲染「状态会话」一组，导航按钮、滚轮、分组折叠等都不受影响。
+ *
  * @module dsh-session-status-hub/hub-ui
  */
 
@@ -82,7 +88,8 @@ function createFallbackT(dict) {
  *   history?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
  *   goBack?: () => boolean,
  *   goForward?: () => boolean,
- * }} deps 由 client-main 注入的动作、确认表、「后台完成」记账、草稿表与会话导航历史（后三者可选）。
+ *   settings?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
+ * }} deps 由 client-main 注入的动作、确认表、「后台完成」记账、草稿表、会话导航历史与状态栏显示设置（后四者可选）。
  * @param {'header'|'chrome'} [variant] 渲染位置：会话标题前，或 Windows 顶栏菜单之后。
  * @returns {Function} React 函数组件。
  */
@@ -101,6 +108,9 @@ function createSessionHubRail(React, deps, variant = 'header') {
   /** 会话导航历史的缺省快照：没有注入时两个按钮都置灰（没有可去的地方）。 */
   const EMPTY_NAV = Object.freeze({ entries: Object.freeze([]), index: -1, canBack: false, canForward: false })
   const EMPTY_NAV_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_NAV }
+  /** 显示设置的缺省快照：没有注入时按默认值（显示「最近会话」）渲染。 */
+  const DEFAULT_SETTINGS = Object.freeze({ showRecentSessions: true })
+  const EMPTY_SETTINGS_STORE = { subscribe: () => () => {}, getSnapshot: () => DEFAULT_SETTINGS }
 
   /** 文案回落：插槽没有绑定 locale 时也能显示中文。 */
   const fallbackT = createFallbackT(HUB_STRINGS.zh)
@@ -209,6 +219,9 @@ function createSessionHubRail(React, deps, variant = 'header') {
     const drafts = useSnapshot(deps.drafts ?? EMPTY_DRAFT_STORE)
     // 会话导航历史：只读快照，用来决定 ‹ › 两个按钮此刻可不可点。
     const nav = useSnapshot(deps.history ?? EMPTY_NAV_STORE)
+    // 状态栏显示设置：目前只有「是否显示最近会话组」（插件详情页的设置区块可切换）。
+    const settings = useSnapshot(deps.settings ?? EMPTY_SETTINGS_STORE)
+    const showRecent = settings?.showRecentSessions !== false
     const rows = deriveHubRows({
       list,
       statuses,
@@ -221,12 +234,13 @@ function createSessionHubRail(React, deps, variant = 'header') {
     })
     // 「最近会话」：状态组里没有的会话按更新时间取最近几个（默认 5），作为回头入口。
     // 判据与排序都在模型层（deriveRecentRows），这里只负责渲染。
-    const recentRows = deriveRecentRows({
+    // 设置里关掉「最近会话」时连推导都省掉（少一次排序，也避免上游改动时白算）。
+    const recentRows = showRecent ? deriveRecentRows({
       list,
       statusRows: rows,
       blankTitle: t('blank.title'),
       archivedIds,
-    })
+    }) : []
     const [expanded, setExpanded] = React.useState(false)
     // 「最近会话」组的 3 条 → 全部（与状态组的 `expanded` 同一套路，只是各自独立）。
     const [recentExpanded, setRecentExpanded] = React.useState(false)
@@ -576,6 +590,99 @@ function createSessionHubRowHint(React, deps) {
       h('span', { key: 'dot', className: 'dsh-hub-hint__dot', 'aria-hidden': 'true' }),
       h('span', { key: 'text', className: 'dsh-hub-hint__text' }, label),
       detail === '' ? null : h('span', { key: 'detail', className: 'dsh-hub-hint__detail' }, detail),
+    ])
+  }
+}
+
+/**
+ * 创建「插件详情页里的设置区块」组件。
+ *
+ * ## 为什么长在这里
+ *
+ * DSH 的插件管理详情页把「本插件自己的配置区块」开成一个 keyed 插槽
+ * `plugins.bundle.config`（key = 包名）。我们把它注册进去，用户就能在插件详情页里
+ * 直接切换状态栏的行为，不必去动 profile 的 `cordis.patch.yml`、也不必开 DevTools。
+ *
+ * 这套设置**只影响状态栏显示**，不走宿主半、不改投影与通知：
+ *
+ *   - `showRecentSessions`（默认 `true`）：是否渲染状态栏第二组「最近会话」。
+ *
+ * 值存在客户端配置里（`localStorage` 的 `<pluginId>/config-v1`，与 `@see notify-core` 的
+ * `DEFAULT_CONFIG` 同一份），由 client-main 的 `patchConfig` 包装统一落盘并广播给状态栏，
+ * 因此勾选/取消的下一帧状态栏就跟着变，刷新页面依然生效。
+ *
+ * @param {object} React React 运行时（由客户端模块表提供）。
+ * @param {{
+ *   settings?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
+ *   setShowRecentSessions?: (visible: boolean) => void,
+ * }} deps 显示设置快照与写入动作（都来自 client-main）。
+ * @returns {Function} React 函数组件。
+ */
+function createHubSettingsPanel(React, deps) {
+  const h = React.createElement
+  const fallbackT = createFallbackT(HUB_STRINGS.zh)
+  /** 缺省设置：与 notify-core 的 DEFAULT_CONFIG 保持一致（默认显示最近会话）。 */
+  const DEFAULT_SETTINGS = Object.freeze({ showRecentSessions: true })
+  const EMPTY_SETTINGS_STORE = { subscribe: () => () => {}, getSnapshot: () => DEFAULT_SETTINGS }
+
+  /**
+   * 订阅设置快照仓库。
+   * @param {object} store 快照仓库。
+   * @returns {object} 当前设置。
+   */
+  function useSnapshot(store) {
+    if (typeof React.useSyncExternalStore === 'function') {
+      return React.useSyncExternalStore(store.subscribe, store.getSnapshot)
+    }
+    const [, force] = React.useState(0)
+    React.useEffect(() => store.subscribe(() => force((n) => n + 1)), [store])
+    return store.getSnapshot()
+  }
+
+  const CSS = [
+    '.dsh-hub-cfg{display:flex;flex-direction:column;gap:8px;font:inherit;color:var(--dsw-alias-label-primary)}',
+    '.dsh-hub-cfg__title{margin:0;font-size:12px;font-weight:600;line-height:1.4;color:var(--dsw-alias-label-secondary);letter-spacing:.02em}',
+    // 整行可点：checkbox 只有 14px，点文字也能切换才是「设置行」该有的手感。
+    '.dsh-hub-cfg__row{display:flex;align-items:flex-start;gap:8px;cursor:pointer;user-select:none}',
+    '.dsh-hub-cfg__check{flex:none;width:14px;height:14px;margin:2px 0 0;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}',
+    '.dsh-hub-cfg__check:disabled{cursor:default;opacity:.5}',
+    '.dsh-hub-cfg__check:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}',
+    '.dsh-hub-cfg__text{display:flex;flex-direction:column;gap:2px;min-width:0}',
+    '.dsh-hub-cfg__label{font-size:13px;line-height:1.4}',
+    '.dsh-hub-cfg__hint{font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+  ].join('')
+
+  return function SessionHubSettings(props) {
+    const t = typeof props?.t === 'function' ? props.t : fallbackT
+    const settings = useSnapshot(deps.settings ?? EMPTY_SETTINGS_STORE)
+    const setShowRecent = typeof deps.setShowRecentSessions === 'function' ? deps.setShowRecentSessions : null
+    // 只有显式 false 才算关：老配置里没有这个键时按默认显示。
+    const checked = settings?.showRecentSessions !== false
+
+    return h('div', {
+      className: 'dsh-hub-cfg',
+      'data-dsh-session-status-hub-settings': 'rail',
+    }, [
+      h('style', { key: 'style' }, CSS),
+      h('h4', { key: 'title', className: 'dsh-hub-cfg__title' }, t('settings.title')),
+      h('label', { key: 'recent', className: 'dsh-hub-cfg__row' }, [
+        h('input', {
+          key: 'check',
+          type: 'checkbox',
+          className: 'dsh-hub-cfg__check',
+          'data-dsh-hub-setting': 'recent-sessions',
+          checked,
+          disabled: setShowRecent === null,
+          onChange: (event) => {
+            if (setShowRecent === null) return
+            setShowRecent(Boolean(event?.target?.checked))
+          },
+        }),
+        h('span', { key: 'text', className: 'dsh-hub-cfg__text' }, [
+          h('span', { key: 'label', className: 'dsh-hub-cfg__label' }, t('settings.showRecent')),
+          h('span', { key: 'hint', className: 'dsh-hub-cfg__hint' }, t('settings.showRecent.hint')),
+        ]),
+      ]),
     ])
   }
 }

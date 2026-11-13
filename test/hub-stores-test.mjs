@@ -206,3 +206,15 @@ test('旧前缀迁移：没有旧数据、或新旧前缀相同时什么都不�
   assert.deepEqual(migrateLegacyKeys({ store, keys: KEYS, legacyKeys: { ...KEYS } }), [])
   assert.deepEqual(migrateLegacyKeys({ store, keys: KEYS, legacyKeys: null }), [])
 })
+
+test('显示设置 showRecentSessions：默认显示，只接受布尔值', () => {
+  const { stores } = harness()
+  assert.equal(stores.config.showRecentSessions, true, '默认显示「最近会话」组')
+
+  stores.patchConfig({ showRecentSessions: false })
+  assert.equal(stores.config.showRecentSessions, false)
+
+  // 非布尔值不被接受（回落默认值），与其它布尔配置项同一套归一化。
+  stores.patchConfig({ showRecentSessions: 'no' })
+  assert.equal(stores.config.showRecentSessions, true)
+})

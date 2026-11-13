@@ -22,7 +22,7 @@
  * | 配置 / 水位 / 确认表 / 待查看记账 | hub-stores.js |
  * | 通知落地（tag、去重、落地日志） | hub-notify.js |
  * | 宿主半路由（前置窗口 / 任务栏 / 探活） | hub-host.js |
- * | 状态栏与行悬停组件 | hub-ui.js |
+ * | 状态栏 / 行悬停 / 详情页设置组件 | hub-ui.js |
  * | 插槽注册 | hub-slots.js |
  * | 状态与优先级模型 | hub-model.js |
  * | 会话导航（前进 / 后退）历史 | hub-history.js |
@@ -171,6 +171,19 @@ function apply(ctx) {
   /** 生效中的配置（对象被就地更新，读取请走这里）。 */
   const config = stores.config
   const { acks, localUnread } = stores
+
+  /**
+   * 读一份「状态栏显示设置」快照。
+   *
+   * 目前只有一个键（`showRecentSessions`），但它必须是个**不可变快照**：状态栏用
+   * `useSyncExternalStore` 订阅它，配置对象本身是就地更新的，直接传 `config` 引用不变、
+   * React 永远不会重渲染。所以每次配置变化都另造一个小对象。
+   * @returns {{ showRecentSessions: boolean }} 显示设置。
+   */
+  const readRailSettings = () => ({ showRecentSessions: config.showRecentSessions !== false })
+
+  /** 状态栏显示设置的快照仓库（插件详情页设置区块与状态栏共用这一份）。 */
+  const railSettings = createSnapshotStore(readRailSettings())
   /**
    * 「未开始」草稿表：`{ [sessionId]: { chars } }`。
    *
@@ -538,6 +551,34 @@ function apply(ctx) {
     tickTimer = setTimeout(tick, TICK_COALESCE_MS)
   }
 
+  /**
+   * 合并写入配置：落盘（`stores.patchConfig`）+ 广播显示设置 + 重新观察一次。
+   *
+   * 唯一入口是刻意收拢的：诊断入口的 `setConfig` 与插件详情页的设置区块都走这里，
+   * 否则「改了配置但状态栏不重渲染」这种漏广播很容易在下一处新入口里再犯一次。
+   *
+   * @param {object} patch 部分配置。
+   * @returns {object} 生效后的完整配置。
+   */
+  const patchConfig = (patch) => {
+    const next = stores.patchConfig(patch ?? {})
+    const settings = readRailSettings()
+    if (railSettings.getSnapshot().showRecentSessions !== settings.showRecentSessions) {
+      railSettings.set(settings)
+    }
+    scheduleTick()
+    return next
+  }
+
+  /**
+   * 插件详情页设置：是否显示状态栏第二组「最近会话」。
+   * @param {boolean} visible 是否显示。
+   * @returns {void}
+   */
+  const setShowRecentSessions = (visible) => {
+    patchConfig({ showRecentSessions: visible === true })
+  }
+
   /** 合并水位落盘。 */
   const schedulePersist = () => {
     if (disposed || persistTimer !== null) return
@@ -692,6 +733,9 @@ function apply(ctx) {
       history: navHistory,
       goBack: () => navigateHistory(-1),
       goForward: () => navigateHistory(1),
+      // 插件详情页设置区块：显示设置快照 + 写入动作（状态栏读同一份快照）。
+      settings: railSettings,
+      setShowRecentSessions,
     },
   })
 
@@ -770,11 +814,16 @@ function apply(ctx) {
      * @param {object} patch 部分配置。
      * @returns {object} 生效后的完整配置。
      */
-    setConfig: (patch) => {
-      stores.patchConfig(patch ?? {})
-      scheduleTick()
-      return { ...config }
-    },
+    setConfig: (patch) => ({ ...patchConfig(patch) }),
+    /**
+     * 状态栏显示设置（与插件详情页设置区块同一份快照）。
+     *
+     * 形状 `{ showRecentSessions }`：`false` 表示状态栏不渲染第二组「最近会话」。
+     * 想验证设置区块的写入是否生效，先 `setConfig({ showRecentSessions: false })`，
+     * 再看这里的值与状态栏是否只剩「状态会话」一组。
+     * @returns {object} 显示设置快照。
+     */
+    getSettings: () => ({ ...railSettings.getSnapshot() }),
     /** @returns {object} 当前水位表（只读快照）。 */
     getWatermarks: () => JSON.parse(JSON.stringify(stores.watermarks.get())),
     /**

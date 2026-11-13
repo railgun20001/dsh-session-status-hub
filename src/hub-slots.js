@@ -8,6 +8,7 @@
  * | `conversation.header.leading` | `header` | 会话标题之前、工作区内容之上 | 非 Windows 顶栏环境 |
  * | `shell.overlay` | `chrome` | 软件顶端标题栏、「应用 / 编辑」菜单之后 | 桌面端（`data-windows-titlebar`） |
  * | `sidebar.session.row.hover` | — | 会话行悬停卡片内容位 | 该行最后一轮失败/中断且未确认 |
+ * | `plugins.bundle.config` | — | 插件管理 → 本插件详情页的设置区块 | 打开本插件的详情页时 |
  *
  * 两个状态栏变体都注册，由 CSS 按 `html[data-windows-titlebar]` 二选一显示：这样不用去
  * 猜宿主此刻是什么外壳，也不需要监听外壳类型变化。
@@ -33,6 +34,8 @@
  *   history?: object,
  *   goBack?: () => boolean,
  *   goForward?: () => boolean,
+ *   settings?: object,
+ *   setShowRecentSessions?: (visible: boolean) => void,
  * }} options.deps 组件要用的动作与状态仓库。
  * @returns {void}
  */
@@ -68,6 +71,8 @@ export function registerHubSlots({ ctx, pluginId, deps }) {
           history: deps.history,
           goBack: deps.goBack,
           goForward: deps.goForward,
+          // 状态栏显示设置（是否显示「最近会话」组）：状态栏读快照。
+          settings: deps.settings,
         }
         const RailHeader = createSessionHubRail(React, railDeps, 'header')
         const RailChrome = createSessionHubRail(React, railDeps, 'chrome')
@@ -94,6 +99,26 @@ export function registerHubSlots({ ctx, pluginId, deps }) {
         ctx.logger?.info?.(
           `[${pluginId}] 状态栏已注册到 conversation.header.leading + shell.overlay + sidebar.session.row.hover`,
         )
+
+        // 插件详情页里的设置区块：keyed 插槽，key = 包名（与插件 id 同一个字符串）。
+        // 拿不到它时只记日志——设置入口消失是小事，绝不能让状态栏跟着挂掉。
+        const SettingsPanel = createHubSettingsPanel(React, {
+          settings: deps.settings,
+          setShowRecentSessions: deps.setShowRecentSessions,
+        })
+        scoped.slots.inject('plugins.bundle.config', () => {
+          try {
+            return scoped.slots.register({
+              name: 'plugins.bundle.config',
+              key: pluginId,
+              locale: pluginId,
+            }, SettingsPanel)
+          } catch (error) {
+            console.warn(`[${pluginId}] 插件详情页设置区块注册失败（已忽略）`, error)
+            return () => {}
+          }
+        })
+        ctx.logger?.info?.(`[${pluginId}] 插件详情页设置区块已注册到 plugins.bundle.config`)
       } catch (error) {
         console.warn(`[${pluginId}] 注册状态栏失败`, error)
       }

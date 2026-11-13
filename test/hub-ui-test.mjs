@@ -127,6 +127,15 @@ function loadHintFactory() {
 }
 
 /**
+ * 载入插件详情页设置区块工厂。
+ * @returns {Function} createHubSettingsPanel。
+ */
+function loadSettingsFactory() {
+  // eslint-disable-next-line no-new-func
+  return new Function('HUB_STRINGS', `${SOURCE}\nreturn createHubSettingsPanel`)(HUB_STRINGS)
+}
+
+/**
  * 找到第一个满足条件的节点。
  * @param {object} node 根节点。
  * @param {(node: object) => boolean} predicate 条件。
@@ -754,4 +763,76 @@ test('导航按钮的视觉线索：hover 底色、focus 描边、禁用态降�
   assert.match(css, /\.dsh-hub__navbtn:hover:not\(:disabled\)\{[^}]*background:var\(--dsw-alias-bg-layer-2\)/)
   assert.match(css, /\.dsh-hub__navbtn:focus-visible\{/)
   assert.match(css, /\.dsh-hub__navbtn:disabled\{[^}]*opacity:/)
+})
+
+test('设置里关掉「最近会话」：状态栏只剩状态会话组，导航按钮照常', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+    settings: { subscribe: () => () => {}, getSnapshot: () => ({ showRecentSessions: false }) },
+  })
+  const list = {
+    byId: { active: row('active', { running: true, updatedAt: 50 }), idle: row('idle', { updatedAt: 10 }) },
+    projectionsBySession: {},
+  }
+  const tree = Rail({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const text = collectText(tree).join('|')
+  assert.match(text, /状态会话/)
+  assert.doesNotMatch(text, /最近会话/, '关掉设置后不该再渲染这一组')
+  assert.deepEqual(chipsOf(tree, 'dsh-hub__chip--recent'), [])
+  // 状态组与导航按钮不受影响。
+  assert.equal(chipsOf(tree, 'dsh-hub__chip--running').length, 1)
+  assert.ok(findNode(tree, (node) => node.props?.['data-dsh-hub-nav'] === 'back') !== undefined)
+
+  // 没有注入设置仓库时按默认渲染（显示最近会话）。
+  const RailDefault = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  const defaultTree = RailDefault({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  assert.match(collectText(defaultTree).join('|'), /最近会话/)
+})
+
+test('详情页设置区块：默认勾选，取消勾选写入 showRecentSessions=false', () => {
+  const calls = []
+  const Settings = loadSettingsFactory()(reactStub(), {
+    settings: { subscribe: () => () => {}, getSnapshot: () => ({ showRecentSessions: true }) },
+    setShowRecentSessions: (visible) => calls.push(visible),
+  })
+  const tree = Settings({})
+  const box = findNode(tree, (node) => node.props?.['data-dsh-hub-setting'] === 'recent-sessions')
+  assert.ok(box !== undefined, '应当渲染「显示最近会话」勾选框')
+  assert.equal(box.props.checked, true)
+  assert.equal(box.props.disabled, false)
+  assert.equal(box.props.type, 'checkbox')
+  // 区块标题与说明来自 HUB_STRINGS（单一来源）。
+  assert.match(collectText(tree).join('|'), /状态栏/)
+  assert.match(collectText(tree).join('|'), /最近会话/)
+
+  box.props.onChange({ target: { checked: false } })
+  box.props.onChange({ target: { checked: true } })
+  assert.deepEqual(calls, [false, true])
+
+  // 设置值为 false 时勾选框未勾选。
+  const Off = loadSettingsFactory()(reactStub(), {
+    settings: { subscribe: () => () => {}, getSnapshot: () => ({ showRecentSessions: false }) },
+    setShowRecentSessions: () => {},
+  })
+  const offBox = findNode(Off({}), (node) => node.props?.['data-dsh-hub-setting'] === 'recent-sessions')
+  assert.equal(offBox.props.checked, false)
+
+  // 没有写入动作时勾选框禁用（不会出现「点了没反应」的假开关）。
+  const ReadOnly = loadSettingsFactory()(reactStub(), {
+    settings: { subscribe: () => () => {}, getSnapshot: () => ({ showRecentSessions: true }) },
+  })
+  const readonlyBox = findNode(ReadOnly({}), (node) => node.props?.['data-dsh-hub-setting'] === 'recent-sessions')
+  assert.equal(readonlyBox.props.disabled, true)
 })

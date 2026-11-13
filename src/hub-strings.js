@@ -11,6 +11,7 @@
  * 键的命名约定：
  *   - `label` / `idle` / `aria` / `more` / `collapse`：状态栏容器自身（「状态会话」组）
  *   - `nav.*`：「状态会话」前面的会话前进 / 后退按钮（悬停提示与无障碍名称）
+ *   - `settings.*`：插件详情页里的设置区块（标题、开关与其说明）
  *   - `recent.*`：「最近会话」组（组标题、无障碍标签）
  *   - `group.expand` / `group.collapse`：组标题开关的悬停提示与无障碍名称（`{label}` 是组名）
  *   - `blank.title`：空白「新会话」占位行在状态栏里的标题
@@ -35,6 +36,9 @@ export const HUB_STRINGS = Object.freeze({
     'nav.aria': '会话导航',
     'nav.back': '后退会话',
     'nav.forward': '前进会话',
+    'settings.title': '状态栏',
+    'settings.showRecent': '显示「最近会话」组',
+    'settings.showRecent.hint': '状态栏第二组：状态组里没有的会话按更新时间最多取 5 个。关掉后只保留「状态会话」组（前进 / 后退按钮不受影响）',
     'recent.label': '最近会话',
     'recent.aria': '最近会话：{count} 个',
     'recent.more': '还有 {count} 个最近会话',
@@ -59,6 +63,9 @@ export const HUB_STRINGS = Object.freeze({
     'nav.aria': 'Session navigation',
     'nav.back': 'Back to the previous Session',
     'nav.forward': 'Forward to the next Session',
+    'settings.title': 'Status rail',
+    'settings.showRecent': 'Show the Recent Sessions group',
+    'settings.showRecent.hint': 'The rail’s second group: up to 5 recently updated Sessions that are not in the status group. Turn it off to keep only Status Sessions (the back / forward buttons are unaffected)',
     'recent.label': 'Recent Sessions',
     'recent.aria': 'Recent Sessions: {count}',
     'recent.more': '{count} more Recent Sessions',

@@ -1533,3 +1533,24 @@ test('历史里的会话已经不在目录时，后退不跳转也不移动游�
     harness.restore()
   }
 })
+
+test('显示设置：默认显示「最近会话」，setConfig 关掉后快照与存储同步', async () => {
+  const harness = await createHarness({ sessions: [sessionRow('s1')] })
+  try {
+    await settle()
+    const api = globalThis.__DSH_SESSION_HUB__
+    assert.equal(api.getSettings().showRecentSessions, true, '默认显示「最近会话」组')
+    assert.equal(api.getConfig().showRecentSessions, true)
+
+    api.setConfig({ showRecentSessions: false })
+    assert.equal(api.getSettings().showRecentSessions, false)
+    const stored = JSON.parse(harness.state.storage.get('dsh-session-status-hub/config-v1'))
+    assert.equal(stored.showRecentSessions, false, '设置要落盘（刷新页面后仍生效）')
+
+    api.setConfig({ showRecentSessions: true })
+    assert.equal(api.getSettings().showRecentSessions, true)
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})

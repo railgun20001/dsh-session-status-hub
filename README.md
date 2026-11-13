@@ -217,6 +217,7 @@ Config lives in `localStorage` under `dsh-session-status-hub/config-v1`; default
 | `colorMarkers` | `true` | colour emoji in notification titles |
 | `raiseWindow` | `true` | bring the desktop window forward on notification click |
 | `maxRememberedSessions` | `300` | cap on the notification watermark table (newest by `updatedAt` kept) |
+| `showRecentSessions` | `true` | whether the rail shows the Recent Sessions group (**toggle in the plugin detail page**, see below) |
 
 Alongside `config-v1`, the plugin keeps a few state keys under the same prefix — worth knowing
 when troubleshooting, migrating or wiping data:
@@ -229,7 +230,12 @@ when troubleshooting, migrating or wiping data:
 | `recent-v1` | cross-tab dedupe window (4 s) |
 | `notify-log-v1` | last 20 notification landing results |
 
-From the DSH DevTools console:
+**From the plugin detail page**: Plugin Manager → this plugin's details → the settings block
+(`Status rail` → `Show the Recent Sessions group`). It reads and writes the same config key, so the
+rail updates on the next frame and the choice survives a reload. The block is registered into the official
+keyed slot `plugins.bundle.config` (key = package name) — no custom settings panel of its own.
+
+From the DSH DevTools console (same effect):
 
 ```js
 __DSH_SESSION_HUB__.getConfig()
@@ -242,7 +248,7 @@ state facts ("this turn finished and you haven't looked"), not interruptions.
 ## Diagnostics
 
 ```powershell
-npm run check     # 1) lib/client.js matches src/  2) 190 test cases
+npm run check     # 1) lib/client.js matches src/  2) 194 test cases
 ```
 
 ```js
@@ -252,6 +258,7 @@ __DSH_SESSION_HUB__.getTaskbarState()    // red / yellow / green / none
 __DSH_SESSION_HUB__.getDrafts()          // { [sessionId]: { chars } } — sessions with an unsent draft (counts only, no text)
 __DSH_SESSION_HUB__.getLocalUnread()     // plugin-side "finished in background, unseen" records
 __DSH_SESSION_HUB__.getNavHistory()      // { entries, index, canBack, canForward } — the history behind the ‹ › buttons
+__DSH_SESSION_HUB__.getSettings()        // { showRecentSessions } — same snapshot as the detail-page settings block
 __DSH_SESSION_HUB__.goBack()             // step back one Session (same path as the ‹ button)
 __DSH_SESSION_HUB__.goForward()          // step forward one Session (same path as the › button)
 __DSH_SESSION_HUB__.testNotification()   // fire a test toast; clicking it should jump back
@@ -290,11 +297,11 @@ dsh-session-status-hub/
 ├── src/hub-stores.js        config / watermarks / error acks / background-completion records
 ├── src/hub-notify.js        notification landing: short tag, cross-tab dedupe, stale-toast dismissal, landing log
 ├── src/hub-host.js          host-half routes: raise window / taskbar state / liveness probe
-├── src/hub-ui.js            React rail + row hint components
+├── src/hub-ui.js            React rail / row hint / detail-page settings components
 ├── src/hub-slots.js         slot registration
 ├── src/client-main.js       wiring: services → model → notifications / rail / taskbar
 ├── build/bundle.mjs         inlines src/ in order into one classic-script bundle
-├── test/                    190 node:test cases, zero dependencies
+├── test/                    194 node:test cases, zero dependencies
 ├── locale/{zh,en}.json      plugin manager title and description
 ├── icon.svg                 plugin icon
 ├── cordis.patch.yml         bundle patch inserting the session-hub row

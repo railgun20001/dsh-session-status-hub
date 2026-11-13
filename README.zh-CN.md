@@ -212,7 +212,7 @@ localStorage["dsh.conversation.<sessionId>"] = {
 - 每条是一个圆角 chip：状态点 + 会话标题 + 状态短标签；标题过长省略，悬停显示完整标题；
 - **一行两组，中间一条竖直分隔线**：前面是「状态会话」（上面五类，默认显示优先级最高的 3 条 +
   `+N`），后面是「最近会话」（模型层最多给 5 个，同样默认 3 条 + `+N`；没有状态点、用次级文字色，
-  视觉上明显弱于状态组）；
+  视觉上明显弱于状态组；**不想要它可以在插件详情页里关掉**，见第 7 节）；
 - **「状态会话」前面是 `‹` `›` 两个图标按钮**（会话前进 / 后退）：DSH 的会话切换是应用内状态，
   **没有 URL 路由**，浏览器自带的返回键回到的是「上一次整页」而不是「上一个对话」。这两个按钮
   沿插件自己记的「会话访问历史」前后跳，语义与浏览器一致：跳过一个会话后再打开新会话，前进分支
@@ -400,11 +400,11 @@ plugins/dsh-session-status-hub/
 │   ├── hub-stores.js        配置 / 水位 / 报错确认 / 后台完成记账
 │   ├── hub-notify.js        通知落地：短 tag、跨标签页去重、过期通知撤回、落地诊断日志
 │   ├── hub-host.js          宿主半路由：前置窗口 / 任务栏状态 / 在线探活
-│   ├── hub-ui.js            React 状态栏与行悬停提示组件
-│   ├── hub-slots.js         三处插槽注册
+│   ├── hub-ui.js            React 状态栏 / 行悬停提示 / 详情页设置组件
+│   ├── hub-slots.js         四处插槽注册（含插件详情页设置区块）
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    190 个用例（node:test，零依赖）
+├── test/                    194 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -494,8 +494,13 @@ git clone https://github.com/railgun20001/dsh-session-status-hub.git
 | `raiseWindow` | `true` | 点击通知 / chip 时请求宿主半前置窗口 |
 | `colorMarkers` | `true` | 通知标题前的彩色圆点（见第 3 节） |
 | `maxRememberedSessions` | `300` | 通知水位表最多记住多少个会话（按 `updatedAt` 保留最新的） |
+| `showRecentSessions` | `true` | 状态栏是否显示第二组「最近会话」（**插件详情页里有开关**，见下） |
 
-在 DSH 窗口 DevTools 控制台里改：
+**在插件详情页里改**：插件管理 → 本插件详情页的设置区块（`状态栏` → `显示「最近会话」组`）。
+这一项直接读写上面同一个配置键，勾掉后状态栏只剩「状态会话」一组，下一帧生效、刷新仍保持。
+设置区块注册在官方 keyed 插槽 `plugins.bundle.config`（key = 包名），不含任何自定义配置面板。
+
+在 DSH 窗口 DevTools 控制台里改（与设置区块等价）：
 
 ```js
 __DSH_SESSION_HUB__.getConfig()
@@ -511,7 +516,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 190 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 194 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
@@ -534,6 +539,7 @@ __DSH_SESSION_HUB__.getNotifyLog()      // 最近 20 条通知的落地结果（
 __DSH_SESSION_HUB__.clearNotifyLog()    // 清空落地日志
 __DSH_SESSION_HUB__.revealSessionRow('session-…') // 'session' / 'workspace' / null：验证左侧列表能滚到该会话行（不跳转）
 __DSH_SESSION_HUB__.getNavHistory()    // { entries, index, canBack, canForward }：状态栏左端 ‹ › 背后的会话访问历史
+__DSH_SESSION_HUB__.getSettings()      // { showRecentSessions }：状态栏显示设置（插件详情页设置区块的同一份）
 __DSH_SESSION_HUB__.goBack()           // 后退一个会话（与 ‹ 按钮同一条路径），返回是否真的跳了
 __DSH_SESSION_HUB__.goForward()        // 前进一个会话（与 › 按钮同一条路径）
 __DSH_SESSION_HUB__.pingHost()         // 'present' / 'absent' / 'unknown'
@@ -589,6 +595,8 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
 14. 依次点开 A → B → C 三个会话，然后点状态栏最左端的 `‹` → 回到 B，再点 `‹` 回到 A
    （此时 `‹` 置灰），点 `›` 又回到 B / C；在 B 的位置直接点开新会话 D，`›` 应当置灰
    （前进分支被截断）。`__DSH_SESSION_HUB__.getNavHistory()` 能看到 `entries` 与 `index` 的变化。
+15. 打开「插件」→ 本插件详情页 → 设置区块里取消勾选「显示『最近会话』组」：状态栏第二组立刻消失、
+    第一组与 ‹ › 按钮不变；刷新页面（Ctrl+R）后仍然不显示；重新勾选后回来。
 
 ---
 

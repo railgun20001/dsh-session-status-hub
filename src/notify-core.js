@@ -85,6 +85,15 @@ export const DEFAULT_CONFIG = Object.freeze({
   colorMarkers: true,
   /** 点击通知时请求宿主半把桌面窗口提到前台（见 lib/raise-window.js）。 */
   raiseWindow: true,
+  /**
+   * 状态栏是否显示第二组「最近会话」。
+   *
+   * 这是**状态栏显示偏好**，与通知无关；放在这里是因为配置只有这一份（见 hub-stores），
+   * 再开一张表反而要处理两份配置的对账。默认显示：那一组是「刚才那个对话」的回头入口。
+   * 插件详情页的设置区块（`plugins.bundle.config`）直接读写它，关掉后状态栏只剩
+   * 「状态会话」一组（导航按钮、滚轮、分组折叠都不受影响）。
+   */
+  showRecentSessions: true,
   /** 水位表保留条数上限（按 updatedAt 新的优先）。 */
   maxRememberedSessions: 300,
 })
