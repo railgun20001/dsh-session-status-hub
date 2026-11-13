@@ -29,6 +29,21 @@
  * 运行中时先显示它们，草稿只在前面的条目都排完之后才占位，避免挤掉真正需要你处理的状态。
  * 空白「新会话」占位行只在有草稿时进入状态栏，标题统一显示 `blankTitle`（默认「新会话」）。
  *
+ * ## 两组条目：状态会话 + 最近会话
+ *
+ * 状态栏渲染成两组（见 hub-ui）：
+ *
+ *   1. **状态会话**（{@link deriveHubRows}）：上面那五类「当下有事」的会话；
+ *   2. **最近会话**（{@link deriveRecentRows}）：状态组里没有的会话按更新时间取最近 5 个，
+ *      作为「刚才那个会话」的回头入口——读完 / 确认完 / 跑完就从第一组消失的会话，
+ *      还能在第二组点回去。两组不会重复显示同一个会话。
+ *
+ * 这两组只影响**状态栏显示**；任务栏聚合（{@link aggregateTaskbarState}）只看第一组。
+ *
+ * **已归档的会话两组都不显示**：归档集合来自工作区注册表快照的 `archivedSessionIds`
+ * （会话列表行里没有这个字段，见 {@link isArchivedSession}）。归档意味着「我把它收起来了」，
+ * 让它继续以报错 / 未开始 / 最近会话的形式挂在标题栏上是反直觉的。
+ *
  * 任务栏只点「需要你处理」的灯：
  *   - 有报错 → red
  *   - 否则有等待回答 → yellow
@@ -85,6 +100,17 @@ export const HUB_FAILURE_OUTCOMES = Object.freeze(['error', 'interrupted'])
 
 /** 状态栏最多渲染多少行（防止极端情况下渲染上千个 chip）。 */
 export const MAX_HUB_ROWS = 40
+
+/**
+ * 「最近会话」组最多显示多少个。
+ *
+ * 这一组是**状态消失后的回头入口**：状态栏只保留当下需要你处理 / 正在跑的会话，
+ * 一个会话被读完、确认完、跑完之后就会从上面那组里消失；那一组只有 3 条默认可见，
+ * 很快就没有地方回到刚才那个会话了。所以这里按「最近更新时间」补一排 5 个入口。
+ *
+ * 5 是刻意的上限：再多就会把状态栏挤成第二个侧栏，反而不如直接去侧栏点。
+ */
+export const MAX_RECENT_ROWS = 5
 
 /**
  * 取会话展示标题。
@@ -213,6 +239,35 @@ export function hasDraftContent(drafts, id) {
 }
 
 /**
+ * 判断某会话是否属于「已归档」。
+ *
+ * ## 为什么归档要单独判
+ *
+ * 归档集合**不在会话列表行里**：官方把 `archivedSessionIds` 放在工作区注册表快照
+ * （客户端 `useWorkspaces` 的 `archivedSessionIds`，宿主侧是 `workspaceRegistry` 的全局
+ * 归档集）。会话列表 `byId` 的行仍会包含已归档会话（它们只是不在侧栏列表里显示），
+ * 所以状态栏必须自己按这份 id 集合过滤——否则归档掉的旧对话会以「最近会话」甚至
+ * 「未开始 / 报错」的形式一直挂在标题栏上。
+ *
+ * 接受的形状（都只做 id 命中判断）：
+ *   - `string[]`（`useWorkspaces` 快照实际给的形状）；
+ *   - `Set<string>` / `Map<string, unknown>`（调用方便利）；
+ *   - `{ [sessionId]: true }`（调用方便利）。
+ *
+ * @param {readonly string[]|Set<string>|Map<string, unknown>|object|null|undefined} archivedIds 归档集合。
+ * @param {string} id 会话 id。
+ * @returns {boolean} 是否已归档。
+ */
+export function isArchivedSession(archivedIds, id) {
+  if (archivedIds === null || archivedIds === undefined) return false
+  if (archivedIds instanceof Set || archivedIds instanceof Map) return archivedIds.has(id)
+  if (Array.isArray(archivedIds)) return archivedIds.includes(id)
+  if (typeof archivedIds !== 'object') return false
+  const value = archivedIds[id]
+  return value !== undefined && value !== null && value !== false
+}
+
+/**
  * 归一化一张「会话 id → seq」的持久表：只保留非空字符串 id 与非负整数 seq。
  *
  * 「已确认的报错」与「补记的后台完成」是**同一形状**的两张表，以前各写了一份逐行相同的
@@ -250,6 +305,8 @@ export const normalizeLocalUnread = normalizeSeqMap
  *   （见 {@link hasDraftContent}；正文不会传进来，只传元数据）。
  * @param {string} [input.blankTitle] 空白「新会话」占位行的显示标题（默认「新会话」）。
  * @param {boolean} [input.includeSubagents] 是否包含子代理会话（默认 false）。
+ * @param {readonly string[]|Set<string>|object} [input.archivedIds] 已归档会话 id 集合
+ *   （见 {@link isArchivedSession}）；已归档会话一律不显示。
  * @param {number} [input.now] 当前时间（保留给未来排序/过期策略）。
  * @returns {Array<{id: string, title: string, state: string, pendingKind: string|null, errorSeq: number|null, updatedAt: number}>}
  *   按颜色优先级（红 > 黄 > 绿 > 蓝 > 灰）与更新时间排好序的行。
@@ -262,6 +319,7 @@ export function deriveHubRows({
   drafts = {},
   blankTitle = '新会话',
   includeSubagents = false,
+  archivedIds = null,
   now = 0,
 } = {}) {
   const byId = list?.byId
@@ -271,6 +329,8 @@ export function deriveHubRows({
 
   for (const [id, row] of Object.entries(byId)) {
     if (row === null || typeof row !== 'object') continue
+    // 已归档的会话不显示：归档 = 用户主动收起来的东西，不该继续在标题栏上提醒。
+    if (isArchivedSession(archivedIds, id)) continue
     // 「未开始」只代表输入框里有未发送草稿；它是最弱的一类事实，不能盖住任何既有状态。
     // 需要先算出来：空白「新会话」占位行只有在有草稿时才值得进入状态栏。
     const draft = hasDraftContent(drafts, id)
@@ -322,6 +382,80 @@ export function deriveHubRows({
     return a.id.localeCompare(b.id)
   })
   return rows.slice(0, MAX_HUB_ROWS)
+}
+
+/**
+ * 推导「最近会话」组的行：按更新时间取最近若干个**不在**「状态会话」组里的会话。
+ *
+ * ## 为什么是「不在状态组里」而不是「曾经进过状态组又移出的」
+ *
+ * 「移出」这个事件在客户端没有可靠的观测点：会话的状态是**当前值快照**而不是事件流
+ * （见 README 第 5 节），一个会话「刚才还在报错、现在被你确认了」与「一直空闲」在两次
+ * 快照之间完全不可区分。要精确记录「移出」就得维护一张持久化移出表，还要处理刷新、
+ * 多标签页、宿主重启后的对账——代价与收益不成比例。
+ *
+ * 等价的观察结果是：**状态组已经不显示的会话**，按最近更新时间取前 N 个，就是用户
+ * 刚才在处理的那批会话（刚读完 / 刚确认 / 刚跑完 / 刚切换过去的会话必然排在最前）。
+ * 所以这里直接按 `updatedAt` 排序，不再引入第二份会漂移的状态。
+ *
+ * ## 排除规则
+ *
+ *   - 已经在状态组里显示的会话（`statusRows` 里出现过的 id）：同一行状态栏里出现两次
+ *     只会让人怀疑自己点错了；
+ *   - 已归档会话（见 {@link isArchivedSession}）：归档是「收起来」的意思，不该在标题栏复活；
+ *   - 空白「新会话」占位行（`blank === true`）：没有内容，列出来就是一串同名「新会话」；
+ *   - 子代理会话（`origin === 'subagent'`，除非显式 `includeSubagents`）：与状态栏同口径，
+ *     一次任务子代理的成败不该出现在这里。
+ *
+ * @param {object} input 输入。
+ * @param {object} input.list 会话列表快照（`byId` 形状与 {@link deriveHubRows} 相同）。
+ * @param {Array<{id: string}>} [input.statusRows] 「状态会话」组当前已经显示的行。
+ * @param {number} [input.limit] 最多返回多少行（默认 {@link MAX_RECENT_ROWS}；<= 0 表示不显示该组）。
+ * @param {string} [input.blankTitle] 空白占位行标题（这里只会用来做兜底，正常不会出现）。
+ * @param {boolean} [input.includeSubagents] 是否包含子代理会话（默认 false）。
+ * @param {readonly string[]|Set<string>|object} [input.archivedIds] 已归档会话 id 集合
+ *   （见 {@link isArchivedSession}）；已归档会话一律不出现。
+ * @returns {Array<{id: string, title: string, updatedAt: number}>} 按更新时间倒序的行。
+ */
+export function deriveRecentRows({
+  list,
+  statusRows = [],
+  limit = MAX_RECENT_ROWS,
+  blankTitle = '新会话',
+  includeSubagents = false,
+  archivedIds = null,
+} = {}) {
+  const byId = list?.byId
+  if (byId === null || typeof byId !== 'object') return []
+  if (!Number.isFinite(limit) || limit <= 0) return []
+
+  const shown = new Set()
+  if (Array.isArray(statusRows)) {
+    for (const item of statusRows) {
+      if (typeof item?.id === 'string' && item.id !== '') shown.add(item.id)
+    }
+  }
+
+  const rows = []
+  for (const [id, row] of Object.entries(byId)) {
+    if (row === null || typeof row !== 'object') continue
+    if (shown.has(id)) continue
+    if (isArchivedSession(archivedIds, id)) continue
+    if (row.blank === true) continue
+    if (row.origin === 'subagent' && !includeSubagents) continue
+    rows.push({
+      id,
+      title: hubTitleOf(row, blankTitle),
+      updatedAt: Number.isFinite(row.updatedAt) ? row.updatedAt : 0,
+    })
+  }
+
+  // 更新时间新的靠前；同一时刻用 id 兜底，保证顺序稳定（避免 React key 跳动）。
+  rows.sort((a, b) => {
+    if (b.updatedAt !== a.updatedAt) return b.updatedAt - a.updatedAt
+    return a.id.localeCompare(b.id)
+  })
+  return rows.slice(0, limit)
 }
 
 /**

@@ -12,12 +12,24 @@
  *
  * ## 数据来源
  *
- * 组件只读插槽的标准 props：`useSessions`、`useSessionStatus` 与绑定后的 `t`。
- * 前两者都是订阅式快照钩子，会话状态一变就重渲染；组件自己不订阅事件、不扫描 DOM。
+ * 组件只读插槽的标准 props：`useSessions`、`useSessionStatus`、`useWorkspaces` 与绑定后的 `t`。
+ * 三者都是订阅式快照钩子，会话状态 / 归档集合一变就重渲染；组件自己不订阅事件、不扫描 DOM。
+ * `useWorkspaces` 只用来取 `archivedSessionIds`——会话列表行里没有「已归档」字段，
+ * 归档集合只存在于工作区注册表的全局集合里，而归档的会话不该继续显示在状态栏。
  *
  * 视觉全部使用 `--dsw-alias-*` 主题令牌；颜色只用于状态点，语义与原生侧栏一致。
  * 可见文案一律来自 {@link HUB_STRINGS}（hub-strings.js）——组件里不再存第二份副本，
  * locale 服务不可用时直接用其中的 `zh` 回落。
+ *
+ * ## 两组条目
+ *
+ * 状态栏一行里并排两组（中间用一条竖直分隔线断开）：
+ *
+ *   - **状态会话**（`t('label')`）：当下需要你处理 / 正在跑的会话，默认显示 3 条 + `+N`；
+ *   - **最近会话**（`t('recent.label')`）：状态组里没有的会话按更新时间取最近 5 个，
+ *     作为「刚才那个会话」的回头入口；同一次渲染里两组不会出现同一个会话。
+ *
+ * 第二组条目不参与第一组的折叠：它的上限（`MAX_RECENT_ROWS`）在模型层就兜住了。
  *
  * @module dsh-session-status-hub/hub-ui
  */
@@ -54,6 +66,8 @@ function createSessionHubRail(React, deps, variant = 'header') {
   const EMPTY_STATUSES = new Map()
   const EMPTY_UNREAD = {}
   const EMPTY_DRAFTS = {}
+  /** 归档集合的缺省值：没有 `useWorkspaces` 时不做归档过滤（组件照常渲染）。 */
+  const EMPTY_ARCHIVED = Object.freeze([])
   /** 「后台完成」记账的缺省仓库：没有注入时组件照常渲染，只是没有补记的绿点。 */
   const EMPTY_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_UNREAD }
   /** 草稿表的缺省仓库：没有注入时组件照常渲染，只是没有「未开始」灰点。 */
@@ -65,6 +79,7 @@ function createSessionHubRail(React, deps, variant = 'header') {
   /** 没有插槽钩子时的安全回落（只会在测试或异常组合里用到）。 */
   const useEmptySessions = () => EMPTY_LIST
   const useEmptyStatuses = () => EMPTY_STATUSES
+  const useEmptyWorkspaces = () => EMPTY_ARCHIVED
 
   /**
    * 订阅一个快照仓库；React 18+ 用 useSyncExternalStore，旧版本退化为强制刷新。
@@ -100,6 +115,11 @@ function createSessionHubRail(React, deps, variant = 'header') {
     '.dsh-hub__more{flex:none;display:inline-flex;align-items:center;height:26px;padding:0 9px;border:1px dashed var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:1;cursor:pointer;white-space:nowrap}',
     '.dsh-hub__more:hover{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}',
     '.dsh-hub__more:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px}',
+    // 两组条目（状态会话 / 最近会话）：组内间距继承外层 gap（header 6px、chrome 4px），
+    // 组本身不允许被压缩，否则窄窗口下两组会互相挤成省略号。
+    '.dsh-hub__group{display:inline-flex;align-items:center;gap:inherit;flex:none;min-width:0}',
+    // 两组之间一条竖直分隔线：两串 chip 直接相连时，读不出哪几条是需要处理的、哪几条是最近去过。
+    '.dsh-hub__group--recent{border-left:1px solid var(--dsw-alias-border-l1);padding-left:8px}',
     // Windows 顶栏变体：fixed 在「应用 / 编辑」菜单之后，高度跟随原生顶栏（40px）。
     // --dsh-windows-menu-start 由侧栏发布（展开 48px / 收起 84px）；菜单本体约 100px。
     '.dsh-hub--chrome{position:fixed;top:0;left:calc(var(--dsh-windows-menu-start,48px) + 108px);height:var(--dsh-windows-titlebar-height,40px);max-width:calc(100vw - 460px);padding:0 8px 0 0;gap:4px;z-index:1090;pointer-events:auto;-webkit-app-region:no-drag}',
@@ -107,6 +127,10 @@ function createSessionHubRail(React, deps, variant = 'header') {
     '.dsh-hub--chrome .dsh-hub__chip{max-width:180px}',
     '.dsh-hub--chrome .dsh-hub__label{font-size:11px}',
     '.dsh-hub--chrome .dsh-hub__state{font-size:9px}',
+    // 「最近会话」chip：没有状态点，只用次级文字色，视觉上明显弱于状态会话组——
+    // 它是回头入口，不是「需要你处理」的提示。
+    '.dsh-hub .dsh-hub__chip--recent{max-width:150px;color:var(--dsw-alias-label-secondary)}',
+    '.dsh-hub .dsh-hub__chip--recent:hover{color:var(--dsw-alias-label-primary)}',
     'html:not([data-windows-titlebar]) .dsh-hub--chrome{display:none}',
     'html[data-windows-titlebar] .dsh-hub--header{display:none}',
     '@keyframes dsh-hub-pulse{0%,100%{opacity:1}50%{opacity:.35}}',
@@ -119,6 +143,13 @@ function createSessionHubRail(React, deps, variant = 'header') {
     const useSessionStatus = typeof props?.useSessionStatus === 'function' ? props.useSessionStatus : useEmptyStatuses
     const list = useSessions((value) => value)
     const statuses = useSessionStatus((value) => value)
+    // 归档集合来自工作区注册表的根级 hook（`useWorkspaces` 的 `archivedSessionIds`）：
+    // 会话列表行里没有「已归档」字段，归档只存在于这份全局集合里。选择器只挑出这个数组，
+    // 快照的其他字段变化（工作区标题、顺序等）不会引来重渲染。
+    const useWorkspaces = typeof props?.useWorkspaces === 'function' ? props.useWorkspaces : useEmptyWorkspaces
+    const archivedIds = useWorkspaces((value) => (
+      Array.isArray(value?.archivedSessionIds) ? value.archivedSessionIds : EMPTY_ARCHIVED
+    ))
     const ackErrors = useSnapshot(deps.acks)
     // 官方的 completionUnread 对主视图会话永不置位；「窗口在后台时跑完」的绿点来自
     // 本插件的补记（client-main 的 localUnread），这里必须一起喂给模型。
@@ -132,20 +163,31 @@ function createSessionHubRail(React, deps, variant = 'header') {
       localUnread,
       drafts,
       blankTitle: t('blank.title'),
+      archivedIds,
       now: Date.now(),
+    })
+    // 「最近会话」：状态组里没有的会话按更新时间取最近几个（默认 5），作为回头入口。
+    // 判据与排序都在模型层（deriveRecentRows），这里只负责渲染。
+    const recentRows = deriveRecentRows({
+      list,
+      statusRows: rows,
+      blankTitle: t('blank.title'),
+      archivedIds,
     })
     const [expanded, setExpanded] = React.useState(false)
     const visibleRows = expanded ? rows : rows.slice(0, 3)
     const hiddenCount = rows.length - visibleRows.length
 
     const children = [h('style', { key: 'style' }, CSS)]
-    children.push(h('span', { key: 'label', className: 'dsh-hub__label' }, t('label')))
+
+    // ---- 第一组：状态会话（需要你处理 / 正在跑的会话 + 未发送草稿）----
+    const statusChildren = [h('span', { key: 'label', className: 'dsh-hub__label' }, t('label'))]
     if (rows.length === 0) {
-      children.push(h('span', { key: 'idle', className: 'dsh-hub__idle' }, t('idle')))
+      statusChildren.push(h('span', { key: 'idle', className: 'dsh-hub__idle' }, t('idle')))
     } else {
       for (const row of visibleRows) {
         const stateLabel = t(`state.${row.state}`)
-        children.push(h('button', {
+        statusChildren.push(h('button', {
           key: row.id,
           type: 'button',
           className: `dsh-hub__chip dsh-hub__chip--${row.state}`,
@@ -167,7 +209,7 @@ function createSessionHubRail(React, deps, variant = 'header') {
         h('span', { className: 'dsh-hub__state' }, stateLabel)))
       }
       if (hiddenCount > 0) {
-        children.push(h('button', {
+        statusChildren.push(h('button', {
           key: 'more',
           type: 'button',
           className: 'dsh-hub__more',
@@ -176,13 +218,41 @@ function createSessionHubRail(React, deps, variant = 'header') {
           onClick: () => setExpanded(true),
         }, `+${hiddenCount}`))
       } else if (expanded && rows.length > 3) {
-        children.push(h('button', {
+        statusChildren.push(h('button', {
           key: 'collapse',
           type: 'button',
           className: 'dsh-hub__more',
           onClick: () => setExpanded(false),
         }, t('collapse')))
       }
+    }
+    children.push(h('span', { key: 'status', className: 'dsh-hub__group dsh-hub__group--status' }, statusChildren))
+
+    // ---- 第二组：最近会话（刚读完 / 刚确认 / 刚跑完的会话回头入口，最多 5 个）----
+    // 这一组不参与第一组的「3 条折叠」：上限本身就由模型层的 MAX_RECENT_ROWS 兜住，
+    // 再折一次只会让「最近」变成「还得点一下才能看到」。
+    if (recentRows.length > 0) {
+      const recentChildren = [
+        h('span', { key: 'label', className: 'dsh-hub__label' }, t('recent.label')),
+      ]
+      for (const row of recentRows) {
+        recentChildren.push(h('button', {
+          key: row.id,
+          type: 'button',
+          className: 'dsh-hub__chip dsh-hub__chip--recent',
+          title: `${t('recent.label')}：${row.title}`,
+          'aria-label': `${t('recent.label')}：${row.title}`,
+          // 最近会话没有状态可确认，只需跳转。
+          onClick: () => deps.openSession(row.id, { raise: false }),
+        },
+        h('span', { className: 'dsh-hub__title' }, row.title)))
+      }
+      children.push(h('span', {
+        key: 'recent',
+        className: 'dsh-hub__group dsh-hub__group--recent',
+        role: 'group',
+        'aria-label': t('recent.aria', { count: recentRows.length }),
+      }, recentChildren))
     }
 
     return h('div', {

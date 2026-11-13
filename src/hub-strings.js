@@ -9,7 +9,8 @@
  * 与颜色优先级属于模型层（见 hub-model.js 的 STATE_ORDER），不要混进来。
  *
  * 键的命名约定：
- *   - `label` / `idle` / `aria` / `more` / `collapse`：状态栏容器自身
+ *   - `label` / `idle` / `aria` / `more` / `collapse`：状态栏容器自身（「状态会话」组）
+ *   - `recent.*`：「最近会话」组（组标题、无障碍标签）
  *   - `blank.title`：空白「新会话」占位行在状态栏里的标题
  *   - `state.<state>`：状态短标签，`<state>` 必须与 hub-model 的 STATE_ORDER 键一致
  *   - `row.<kind>`：会话行悬停卡片里的失败提示，`<kind>` 与 failureKindOf 的返回值一致
@@ -27,11 +28,13 @@
  */
 export const HUB_STRINGS = Object.freeze({
   zh: Object.freeze({
-    label: '会话',
+    label: '状态会话',
     idle: '全部空闲',
+    'recent.label': '最近会话',
+    'recent.aria': '最近会话：{count} 个',
     'blank.title': '新会话',
-    aria: '会话状态：{count} 个需要关注',
-    more: '还有 {count} 个会话',
+    aria: '状态会话：{count} 个需要关注',
+    more: '还有 {count} 个状态会话',
     collapse: '收起',
     'state.answer': '等待回答',
     'state.draft': '未开始',
@@ -43,11 +46,13 @@ export const HUB_STRINGS = Object.freeze({
     'row.hint': '该会话最后一轮没有正常结束',
   }),
   en: Object.freeze({
-    label: 'Sessions',
+    label: 'Status Sessions',
     idle: 'All idle',
+    'recent.label': 'Recent Sessions',
+    'recent.aria': 'Recent Sessions: {count}',
     'blank.title': 'New Session',
-    aria: 'Session status: {count} need attention',
-    more: '{count} more Sessions',
+    aria: 'Status Sessions: {count} need attention',
+    more: '{count} more Status Sessions',
     collapse: 'Collapse',
     'state.answer': 'Waiting',
     'state.draft': 'Not started',

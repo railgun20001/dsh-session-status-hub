@@ -10,10 +10,13 @@ import {
   aggregateTaskbarState,
   currentSessionIdOf,
   deriveHubRows,
+  deriveRecentRows,
   failureKindOf,
   hasDraftContent,
   hasLocalUnread,
+  isArchivedSession,
   isUnackedFailure,
+  MAX_RECENT_ROWS,
   normalizeAckErrors,
   normalizeLocalUnread,
   projectionOf,
@@ -274,4 +277,95 @@ test('localUnread 记账的三种形状都按 id 命中，坏数据被丢弃', (
   assert.deepEqual(normalizeLocalUnread({ a: 3, b: -1, c: 'x', d: 1.5, '': 2 }), { a: 3 })
   assert.deepEqual(normalizeLocalUnread(null), {})
   assert.deepEqual(normalizeLocalUnread([1, 2]), {})
+})
+
+test('最近会话：按更新时间倒序、排除状态组里已有的会话、默认最多 5 个', () => {
+  // 8 个会话：s1 在状态组里（运行中），s2..s8 空闲，更新时间递减。
+  const list = listOf([
+    row('s1', { running: true, updatedAt: 900 }),
+    row('s2', { updatedAt: 800 }),
+    row('s3', { updatedAt: 700 }),
+    row('s4', { updatedAt: 600 }),
+    row('s5', { updatedAt: 500 }),
+    row('s6', { updatedAt: 400 }),
+    row('s7', { updatedAt: 300 }),
+    row('s8', { updatedAt: 200 }),
+  ])
+  const statusRows = deriveHubRows({ list, statuses: new Map() })
+  assert.deepEqual(statusRows.map((item) => item.id), ['s1'], '前提：s1 在状态组里')
+
+  const recent = deriveRecentRows({ list, statusRows })
+  // 状态组已经显示的 s1 不再重复出现；剩下按更新时间倒序，只取 5 个。
+  assert.equal(MAX_RECENT_ROWS, 5)
+  assert.deepEqual(recent.map((item) => item.id), ['s2', 's3', 's4', 's5', 's6'])
+  assert.equal(recent[0].title, '会话 s2')
+  assert.equal(recent[0].updatedAt, 800)
+  // limit 可调；<= 0 表示不显示这一组。
+  assert.deepEqual(deriveRecentRows({ list, statusRows, limit: 2 }).map((item) => item.id), ['s2', 's3'])
+  assert.deepEqual(deriveRecentRows({ list, statusRows, limit: 0 }), [])
+})
+
+test('最近会话：跳过空白占位行与子代理会话，坏输入返回空列表', () => {
+  const list = listOf([
+    row('blank', { blank: true, updatedAt: 900 }),
+    row('sub', { origin: 'subagent', updatedAt: 800 }),
+    row('normal', { updatedAt: 100 }),
+  ])
+  assert.deepEqual(deriveRecentRows({ list }).map((item) => item.id), ['normal'])
+  // 显式打开 includeSubagents 时才带子代理会话；空白占位行永远不来（没有内容）。
+  assert.deepEqual(
+    deriveRecentRows({ list, includeSubagents: true }).map((item) => item.id),
+    ['sub', 'normal'],
+  )
+  // 时间是坏值时按 0 处理，仍然排得出来（不会因为脏数据整组消失）。
+  assert.deepEqual(
+    deriveRecentRows({ list: listOf([row('x', { updatedAt: 'bad' })]) }).map((item) => item.id),
+    ['x'],
+  )
+  assert.deepEqual(deriveRecentRows({ list: null }), [])
+  assert.deepEqual(deriveRecentRows({ list: { byId: null } }), [])
+  // statusRows 形状不对时退化成「不排除任何会话」，而不是抛错。
+  assert.deepEqual(
+    deriveRecentRows({ list: listOf([row('a')]), statusRows: undefined }).map((item) => item.id),
+    ['a'],
+  )
+})
+
+test('最近会话：状态组全空（全部空闲）时也照常推导，用来回到刚才那个会话', () => {
+  const list = listOf([row('idle-new', { updatedAt: 20 }), row('idle-old', { updatedAt: 10 })])
+  const statusRows = deriveHubRows({ list, statuses: new Map() })
+  assert.deepEqual(statusRows, [], '全是空闲会话时状态组为空')
+  assert.deepEqual(deriveRecentRows({ list, statusRows }).map((item) => item.id), ['idle-new', 'idle-old'])
+})
+
+test('已归档的会话两组都不显示（归档集合不在会话列表行里）', () => {
+  const list = listOf([
+    row('live', { running: true, updatedAt: 300 }),
+    row('archived-error', { updatedAt: 200 }),
+    row('archived-idle', { updatedAt: 100 }),
+  ], { 'archived-error': outcome(4, 'error') })
+  const statuses = new Map()
+  const archivedIds = ['archived-error', 'archived-idle']
+
+  // 没有归档集合时（旧接线 / 拿不到 useWorkspaces）行为不变。
+  assert.deepEqual(deriveHubRows({ list, statuses }).map((item) => item.id).sort(), [
+    'archived-error', 'live',
+  ])
+  assert.deepEqual(deriveRecentRows({ list }).map((item) => item.id), ['live', 'archived-error', 'archived-idle'])
+
+  // 有归档集合时：报错的那条不再亮红，最近会话里也不再出现。
+  assert.deepEqual(deriveHubRows({ list, statuses, archivedIds }).map((item) => item.id), ['live'])
+  assert.deepEqual(deriveRecentRows({ list, archivedIds }).map((item) => item.id), ['live'])
+})
+
+test('isArchivedSession 兼容数组 / Set / Map / 普通对象与坏值', () => {
+  assert.equal(isArchivedSession(['s1'], 's1'), true)
+  assert.equal(isArchivedSession(['s1'], 's2'), false)
+  assert.equal(isArchivedSession(new Set(['s1']), 's1'), true)
+  assert.equal(isArchivedSession(new Map([['s1', 1]]), 's1'), true)
+  assert.equal(isArchivedSession({ s1: true }, 's1'), true)
+  assert.equal(isArchivedSession({ s1: false }, 's1'), false)
+  assert.equal(isArchivedSession(null, 's1'), false)
+  assert.equal(isArchivedSession(undefined, 's1'), false)
+  assert.equal(isArchivedSession('s1', 's1'), false)
 })

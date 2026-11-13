@@ -8,7 +8,9 @@ A missing "how are all my Sessions doing right now?" surface for [DeepSeek Harne
 - **A rail in the top title bar** listing the Sessions that need you, ordered by
   `red (failed) > yellow (waiting for your answer) > green (unread) > blue (running) > gray (not started)`.
   A Session with an unsent draft in its composer shows up as a gray "Not started" chip.
-  One click jumps straight to that Session.
+  One click jumps straight to that Session. A second group — **Recent Sessions**, the 5 most
+  recently updated Sessions outside the status group — sits right after it as a way back to
+  the conversation you just left.
 - **Windows notifications** when a Session changes state (finished / failed / needs an
   answer), where clicking the toast reopens the Session and brings the DSH window forward.
   A toast clears itself as soon as you open that Session or answer the pending question.
@@ -32,6 +34,9 @@ is waiting for my answer?**
    `red (failed) > yellow (waiting for you) > green (unread) > blue (running) > gray (not started)`.
    The 3 chips shown by default are always the 3 that need you most; one click jumps to that
    Session. A Session whose composer holds an unsent draft appears as a gray "Not started" chip.
+   That group is labelled **Status Sessions**; a second group after it — **Recent Sessions**
+   (the 5 most recently updated Sessions that are not in the status group) — is the one-click
+   way back to the conversation you just left.
 2. **A taskbar status dot** via `ITaskbarList3.SetOverlayIcon` — red / yellow / green on the
    DSH taskbar button, still visible while the window is minimized or buried behind other
    apps.
@@ -70,6 +75,16 @@ What it deliberately does *not* do:
   recently updated first. Gray sits last on purpose: "not started" is only a reminder and must
   not take a top-3 slot away from failed / waiting / unread / running Sessions. When higher
   states fill the three default slots, drafts stay behind the `+N` expander.
+- **Two groups on one line**, split by a vertical rule: **Status Sessions** (the five states
+  above, 3 visible + `+N`) and then **Recent Sessions** — the 5 most recently updated Sessions
+  that are not already in the status group, so a Session you just read / acknowledged / finished
+  is one click away again. Recent chips carry no state dot, use the secondary text colour, are
+  never folded behind `+N`, never notify, and never light the taskbar (taskbar aggregation only
+  looks at the status group). A Session never appears in both groups.
+- **Archived Sessions never show up in either group.** The archive set lives only in the
+  workspace registry snapshot (`archivedSessionIds` — session list rows carry no "archived"
+  flag), so both the rail (via `useWorkspaces`) and the taskbar aggregation filter against it:
+  archiving a Session means "put it away", so it must not keep nagging from the title bar.
 - Classification order (which bucket a Session lands in) is independent of display order:
   waiting > failed > running > unread > not started. Drafts never override any of the four
   established states.
@@ -305,6 +320,19 @@ Session at all.
 - The "failed" state cannot be painted on the official sidebar row dot (the upstream row
   state machine has no error state), so the truth is surfaced in the row hover card instead
   (`本轮失败` / `本轮中断`).
+- **Archive filtering needs the workspace registry**: `archivedSessionIds` comes from the
+  `useWorkspaces` snapshot for the rail, and from `uiWorkspace.workspaces.list` /
+  `workspaces.list` for the taskbar aggregation. When neither is reachable (a custom
+  composition without the Workspace UI) the plugin treats it as "nothing archived": the rail
+  still renders and `__DSH_SESSION_HUB__.inspect().archivedSessions` returns `null` — a
+  deliberate degradation, not a failure.
+- **"Recent Sessions" is an approximation, not a "left the status group" event log**: the
+  client receives the *current* status snapshot, not an event stream, so "was failing a moment
+  ago, now acknowledged" is indistinguishable from "idle all along" between two snapshots.
+  Tracking exits exactly would need an extra persisted table that can drift, so the group is
+  derived as "Sessions not in the status group, newest `updatedAt` first" — the Session you
+  just read / acknowledged / finished / switched away from always sorts to the top, which is the
+  same outcome. Nothing is persisted for it.
 
 ## Security and privacy
 

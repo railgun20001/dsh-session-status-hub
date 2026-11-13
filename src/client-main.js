@@ -194,6 +194,29 @@ function apply(ctx) {
     }
   }
 
+  /**
+   * 取工作区注册表的快照仓库（根级 hook `useWorkspaces` 背后的同一个 store）。
+   *
+   * 归档集合只存在于这里（会话列表行没有「已归档」字段）。两个受支持入口都试一遍：
+   * `uiWorkspace.workspaces.list`（ui-workspace 的对外服务面，hub-scroll 也用它）与
+   * `workspaces.list`（控制器服务本体）。都拿不到时返回 undefined，调用方按「没有归档」处理。
+   * @returns {{ getSnapshot?: () => object, subscribe?: Function }|undefined} 快照仓库。
+   */
+  const workspacesSnapshotStore = () => safeGet('uiWorkspace')?.workspaces?.list ?? safeGet('workspaces')?.list
+
+  /**
+   * 读取已归档会话 id 集合（拿不到时返回 null，表示「不做归档过滤」）。
+   * @returns {readonly string[]|null} 归档集合。
+   */
+  const readArchivedSessionIds = () => {
+    try {
+      const snapshot = workspacesSnapshotStore()?.getSnapshot?.()
+      return Array.isArray(snapshot?.archivedSessionIds) ? snapshot.archivedSessionIds : null
+    } catch {
+      return null
+    }
+  }
+
   /** 让窗口到前台：渲染进程自己只能尽力而为（真正的保证在宿主半）。 */
   const focusWindowBestEffort = () => {
     try {
@@ -432,12 +455,14 @@ function apply(ctx) {
       }
 
       // 3) 状态栏行。正在看当前会话且窗口聚焦时，当前会话的报错视为已读（不再亮红）。
+      //    已归档会话这里也一并过滤：任务栏与状态栏必须同一口径。
       const derive = () => deriveHubRows({
         list: listState,
         statuses,
         ackErrors: acks.getSnapshot(),
         localUnread: localUnread.getSnapshot(),
         drafts: drafts.getSnapshot(),
+        archivedIds: readArchivedSessionIds(),
       })
       let rows = derive()
       if (currentSessionId !== undefined && focused) {
@@ -531,6 +556,12 @@ function apply(ctx) {
     const uiSession = safeGet('uiSession')
     if (uiSession?.sessionStatus?.subscribe !== undefined) {
       disposers.push(uiSession.sessionStatus.subscribe(scheduleTick))
+    }
+    // 归档集合变化也要重算：归档一个正在报错的会话之后，任务栏红灯必须随之熄灭
+    // （状态栏那边由 React 的 useWorkspaces 自己重渲染，不依赖这次观察）。
+    const archivedStore = workspacesSnapshotStore()
+    if (archivedStore?.subscribe !== undefined) {
+      disposers.push(archivedStore.subscribe(scheduleTick))
     }
   } catch (error) {
     console.error(`[${PLUGIN_ID}] 订阅会话状态失败`, error)
@@ -782,6 +813,8 @@ function apply(ctx) {
       localUnread: Object.keys(localUnread.getSnapshot()).length,
       /** 状态栏里正在以「未开始」显示的会话数（空白 / 子代理已由模型层过滤）。 */
       draftSessions: lastRows.filter((row) => row.state === 'draft').length,
+      /** 已归档会话数（读不到归档集合时为 null：此时状态栏不做归档过滤）。 */
+      archivedSessions: readArchivedSessionIds()?.length ?? null,
       /** 窗口此刻是否在前台（与通知静默、待查看记账同源）。 */
       focused: isFocused(config),
       desktopShell: isDesktopShell(),

@@ -15,7 +15,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { deriveHubRows, failureKindOf, projectionOf, STATE_LABELS } from '../src/hub-model.js'
+import { deriveHubRows, deriveRecentRows, failureKindOf, projectionOf, STATE_LABELS } from '../src/hub-model.js'
 import { HUB_STRINGS } from '../src/hub-strings.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -45,8 +45,9 @@ function reactStub() {
 function loadFactory() {
   // 组件里的可见文案来自 HUB_STRINGS（单一来源），所以这里把它作为自由变量注入。
   // eslint-disable-next-line no-new-func
-  return new Function('deriveHubRows', 'STATE_LABELS', 'HUB_STRINGS', `${SOURCE}\nreturn createSessionHubRail`)(
+  return new Function('deriveHubRows', 'deriveRecentRows', 'STATE_LABELS', 'HUB_STRINGS', `${SOURCE}\nreturn createSessionHubRail`)(
     deriveHubRows,
+    deriveRecentRows,
     STATE_LABELS,
     HUB_STRINGS,
   )
@@ -91,6 +92,39 @@ function collectText(node) {
   if (typeof node === 'string' || typeof node === 'number') return [String(node)]
   if (Array.isArray(node)) return node.flatMap((child) => collectText(child))
   return (node.children ?? []).flatMap((child) => collectText(child))
+}
+
+/**
+ * 收集满足条件的全部节点（按出现顺序）。
+ * @param {object} node 根节点。
+ * @param {(node: object) => boolean} predicate 条件。
+ * @returns {object[]} 节点列表。
+ */
+function findAll(node, predicate) {
+  if (node === null || typeof node !== 'object') return []
+  const hit = predicate(node) ? [node] : []
+  for (const child of node.children ?? []) hit.push(...findAll(child, predicate))
+  return hit
+}
+
+/**
+ * 收集某个 class 的 chip。
+ * @param {object} tree 组件树。
+ * @param {string} modifier chip 的修饰类名（如 `dsh-hub__chip--recent`）。
+ * @returns {object[]} chip 节点。
+ */
+function chipsOf(tree, modifier) {
+  return findAll(tree, (node) => typeof node.props?.className === 'string'
+    && node.props.className.includes(modifier))
+}
+
+/**
+ * 取一组 chip 的标题（渲染出来的可见文本）。
+ * @param {object[]} chips chip 节点。
+ * @returns {string[]} 每条的标题文本。
+ */
+function titlesOf(chips) {
+  return chips.map((chip) => collectText(chip).join(''))
 }
 
 /**
@@ -187,7 +221,7 @@ test('已确认的报错不再渲染 chip', () => {
     useSessionStatus: (selector) => selector(new Map()),
   })
   assert.equal(findNode(tree, (node) => typeof node.props?.className === 'string'
-    && node.props.className.includes('dsh-hub__chip')), undefined)
+    && node.props.className.includes('dsh-hub__chip--error')), undefined)
   assert.match(collectText(tree).join('|'), /全部空闲/)
 })
 
@@ -308,4 +342,119 @@ test('chrome 变体带 fixed 顶栏类与菜单偏移 CSS', () => {
   const style = tree.children[0]
   assert.match(style.children[0], /position:fixed/)
   assert.match(style.children[0], /--dsh-windows-menu-start/)
+})
+
+test('「状态会话」组之后追加「最近会话」组：最多 5 个、不与状态组重复', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  // r1 在等你回答（进状态组）；r2..r9 空闲，更新时间依次递减。
+  const byId = { r1: row('r1', { updatedAt: 900 }) }
+  for (let index = 2; index <= 9; index += 1) {
+    byId[`r${index}`] = row(`r${index}`, { updatedAt: 900 - index * 10 })
+  }
+  const list = { byId, projectionsBySession: {} }
+  const tree = Rail({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map([['r1', { pendingInteraction: { kind: 'question' } }]])),
+  })
+
+  const text = collectText(tree).join('|')
+  assert.match(text, /状态会话/)
+  assert.match(text, /最近会话/)
+  // 组标题顺序：状态会话在前，最近会话在后（追加在同一行末尾）。
+  assert.ok(
+    text.indexOf(HUB_STRINGS.zh.label) < text.indexOf(HUB_STRINGS.zh['recent.label']),
+    '最近会话组必须排在状态会话组之后',
+  )
+
+  const recent = chipsOf(tree, 'dsh-hub__chip--recent')
+  assert.equal(recent.length, 5, '最近会话最多 5 个')
+  // 状态组里的 r1 不会在最近会话里重复出现；剩下按更新时间倒序取前 5 个。
+  assert.deepEqual(titlesOf(recent), ['会话 r2', '会话 r3', '会话 r4', '会话 r5', '会话 r6'])
+  assert.deepEqual(titlesOf(chipsOf(tree, 'dsh-hub__chip--answer')), ['会话 r1等待回答'])
+
+  // 最近会话组带自己的无障碍标签，读屏能把两组分开。
+  const recentGroup = findNode(tree, (node) => typeof node.props?.className === 'string'
+    && node.props.className.includes('dsh-hub__group--recent'))
+  assert.ok(recentGroup !== undefined, '应当渲染最近会话组容器')
+  assert.equal(recentGroup.props.role, 'group')
+  assert.equal(recentGroup.props['aria-label'], '最近会话：5 个')
+})
+
+test('已归档会话不显示：组件从 useWorkspaces 的 archivedSessionIds 过滤两组', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+  const list = {
+    byId: {
+      live: row('live', { running: true, updatedAt: 50 }),
+      archived: row('archived', { updatedAt: 40 }),
+    },
+    projectionsBySession: {},
+  }
+  const useWorkspaces = (selector) => selector({ items: [], archivedSessionIds: ['archived'], pinnedSessionIds: [] })
+
+  const filtered = Rail({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+    useWorkspaces,
+  })
+  assert.match(collectText(filtered).join('|'), /会话 live/)
+  assert.doesNotMatch(collectText(filtered).join('|'), /会话 archived/)
+
+  // 拿不到 useWorkspaces（旧宿主 / 独立插槽）时不做归档过滤，但组件必须照常渲染。
+  const unfiltered = Rail({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const text = collectText(unfiltered).join('|')
+  assert.match(text, /会话 live/)
+  assert.match(text, /会话 archived/)
+})
+
+test('点击「最近会话」chip 只跳转，不去确认报错；没有可回头的会话时不渲染该组', () => {
+  const opened = []
+  const acked = []
+  const Rail = loadFactory()(reactStub(), {
+    openSession: (id, options) => opened.push([id, options]),
+    ackError: (id, seq) => acked.push([id, seq]),
+    acks: { subscribe: () => () => {}, getSnapshot: () => ({}) },
+  })
+
+  const list = {
+    byId: { active: row('active', { running: true, updatedAt: 50 }), old: row('old', { updatedAt: 10 }) },
+    projectionsBySession: {},
+  }
+  const tree = Rail({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const recent = chipsOf(tree, 'dsh-hub__chip--recent')
+  assert.deepEqual(titlesOf(recent), ['会话 old'])
+  recent[0].props.onClick()
+  assert.deepEqual(opened, [['old', { raise: false }]])
+  assert.deepEqual(acked, [], '最近会话没有状态可确认')
+
+  // 所有会话都在状态组里时（这里只有一个运行中会话），最近会话组整体不渲染。
+  const onlyStatus = Rail({
+    useSessions: (selector) => selector({ byId: { active: row('active', { running: true }) }, projectionsBySession: {} }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  assert.deepEqual(chipsOf(onlyStatus, 'dsh-hub__chip--recent'), [])
+  assert.doesNotMatch(collectText(onlyStatus).join('|'), /最近会话/)
+  // 空白「新会话」占位行不会跑到最近会话里变成一串同名条目。
+  const withBlank = Rail({
+    useSessions: (selector) => selector({
+      byId: { blank: row('blank', { blank: true }) },
+      projectionsBySession: {},
+    }),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  assert.deepEqual(chipsOf(withBlank, 'dsh-hub__chip--recent'), [])
+  assert.match(collectText(withBlank).join('|'), /全部空闲/)
 })
