@@ -19,6 +19,11 @@
  *    一个状态点。这是 Electron 主进程没有暴露给渲染进程的能力，只能从宿主半这一侧
  *    通过 Win32 补上（宿主进程是 Electron 主进程的直接子进程，能找到窗口句柄）。
  *
+ * 4. **挂载后台任务聚合路由**（`/jobs`）：客户端状态栏轮询「哪些在挂会话还有运行中
+ *    的后台任务」（回合已经结束、任务还在后台跑的那一类），宿主半直接读进程内的
+ *    `ctx.jobs` 注册表聚合——注册表就是真相，无需另建状态（见 apply 里的
+ *    `collectRunningJobs`）。
+ *
  * ## 为什么需要宿主半
  *
  * 「任务失败」这个事实在客户端是拿不到的：客户端的统一会话状态
@@ -169,7 +174,8 @@ function hasRouteHeader(req) {
  * - `POST <前缀>/debug`   ：只读诊断：投影键是否注册、每个在挂会话的投影键与当前值；
  * - `POST <前缀>/raise`   ：把桌面窗口提到前台（通知 / 状态栏被点击时由客户端调用）；
  * - `POST <前缀>/warmup`  ：只预热 PowerShell worker（把 Add-Type 的编译时间提前付掉）；
- * - `POST <前缀>/taskbar` ：设置 / 清除任务栏状态点，body `{ "state": "red|yellow|green|none" }`。
+ * - `POST <前缀>/taskbar` ：设置 / 清除任务栏状态点，body `{ "state": "red|yellow|green|none" }`；
+ * - `POST <前缀>/jobs`    ：聚合「在挂会话 × 运行中的后台任务」，供状态栏「后台任务」状态轮询。
  *
  * 方法不对 → 405；缺签名头 → 403（见 {@link ROUTE_HEADER}）；未知动作 → 404。
  *
@@ -181,9 +187,11 @@ function hasRouteHeader(req) {
  *   overlayState?: () => string,
  * }} raiser 窗口前置 / 任务栏状态器。
  * @param {(() => object) | undefined} [diagnostics] 只读诊断回调。
+ * @param {(() => { sessions: Array<{ sessionId: string, jobs: Array<{ id: string, label: string, status: string, progress?: string }> }> | undefined) | undefined} [runningJobs]
+ *   后台任务聚合回调（见 `apply` 里的 `collectRunningJobs`；jobs / sessions 服务不在时返回 undefined）。
  * @returns {(req: object, res: object) => void} node:http 处理器。
  */
-export function createRouteHandler(raiser, diagnostics) {
+export function createRouteHandler(raiser, diagnostics, runningJobs) {
   return (req, res) => {
     const url = typeof req.url === 'string' ? req.url : ''
     const action = url.startsWith(`${ROUTE_PATH}/`)
@@ -213,6 +221,9 @@ export function createRouteHandler(raiser, diagnostics) {
         raiserRunning: raiser.isRunning?.() === true,
         overlayState: raiser.overlayState?.() ?? 'none',
         workerProtocol: WORKER_PROTOCOL,
+        // 能力标记：本构建带有 /jobs 动作（状态栏「后台任务」状态的数据源）。
+        // 客户端不依赖它做判定（直接探测 404 语义务实），只用于诊断与日志。
+        jobsAction: true,
       })
       return
     }
@@ -260,6 +271,20 @@ export function createRouteHandler(raiser, diagnostics) {
         }
         respond(res, 200, { ok: raiser.overlay(state, target) === true, state })
       })
+      return
+    }
+    if (action === 'jobs') {
+      req.resume?.()
+      let body
+      try {
+        body = runningJobs?.()
+      } catch (error) {
+        respond(res, 200, { ok: false, reason: `jobs snapshot failed: ${String(error)}` })
+        return
+      }
+      // 回调缺失（jobs / sessions 服务不在）与「聚合成功但没有任务」是两回事：
+      // 前者明确告诉客户端「这次没有可信数据」，后者给空列表。
+      respond(res, 200, body ?? { ok: false, reason: 'jobs-unavailable' })
       return
     }
     req.resume?.()
@@ -489,14 +514,72 @@ export function apply(ctx) {
     }
   }
 
+  /**
+   * 聚合「在挂会话 × 运行中的后台任务」：状态栏「后台任务」状态的数据源。
+   *
+   * ## 为什么每次请求现查、而不是自己订阅事件维护一张表
+   *
+   *   - **注册表就是真相**：`ctx.jobs.list(sessionId)` 直接读进程内注册表，
+   *     每次请求都是全新投影，没有「事件丢了表就烂掉」的对账问题；
+   *   - **运行中的任务必然属于在挂会话**：注册表要求所有者必须有活 Agent
+   *     （`JOB_OWNER_NOT_LIVE`），活 Agent 的会话一定被宿主 `sessions.list()` 列出，
+   *     按「在挂会话」循环就不会漏；宿主重启时任务随注册表 teardown 一并取消，
+   *     也不存在跨重启的陈旧条目；
+   *   - **只有低频轮询在读它**：客户端 5 秒一轮，不值得为它开事件订阅与状态机。
+   *
+   * 归属判定用所有者围栏本身：只收 `owner === sessionId` 的任务。无主任务
+   * （owner 缺失、对所有会话可见）不属于任何「对话」，展示在哪个会话名下都是错的，
+   * 直接跳过。
+   *
+   * `jobs` / `sessions` 任一服务不在（自定义组合）时返回 undefined，路由回
+   * `jobs-unavailable`，客户端按「这次没拿到」处理。
+   * @returns {{ sessions: Array<{ sessionId: string, jobs: Array<{ id: string, label: string, status: string, progress?: string }> }> } | undefined}
+   *   按会话归组的运行中任务（label / progress 有界截断）。
+   */
+  const collectRunningJobs = () => {
+    const jobs = ctx.get?.('jobs')
+    const sessionsService = ctx.get?.('sessions')
+    if (typeof jobs?.list !== 'function' || typeof sessionsService?.list !== 'function') return undefined
+    const attached = sessionsService.list()
+    const out = []
+    for (const session of attached) {
+      const sessionId = session?.id
+      if (typeof sessionId !== 'string' || sessionId === '') continue
+      let visible
+      try {
+        visible = jobs.list(sessionId)
+      } catch {
+        // 单个会话读失败（围栏 / 注册表竞态）只跳过该会话，不影响其余聚合。
+        continue
+      }
+      if (!Array.isArray(visible)) continue
+      const running = visible.filter((job) => job !== null && typeof job === 'object'
+        && (job.status === 'running' || job.status === 'stopping')
+        && job.owner === sessionId)
+      if (running.length === 0) continue
+      out.push({
+        sessionId,
+        jobs: running.map((job) => ({
+          id: typeof job.id === 'string' ? job.id : '',
+          label: boundedString(job.label) ?? '',
+          status: job.status,
+          ...(typeof job.progress === 'string' && job.progress !== ''
+            ? { progress: boundedString(job.progress) ?? job.progress }
+            : {}),
+        })),
+      })
+    }
+    return { sessions: out }
+  }
+
   // webServer 是软依赖：没有它（例如纯 headless 组合）时通知照常工作，只是点击不前置窗口。
   ctx.inject(['webServer'], (scoped) => {
     scoped.effect(() => scoped.webServer.register({
       kind: 'prefix',
       path: ROUTE_PATH,
-      handler: createRouteHandler(raiser, diagnostics),
+      handler: createRouteHandler(raiser, diagnostics, collectRunningJobs),
     }), 'session-hub: routes')
-    ctx.logger?.info(`[session-hub] 宿主半 v${VERSION}：内部路由 ${ROUTE_PATH}（ping/debug/warmup/raise/taskbar）已挂载`)
+    ctx.logger?.info(`[session-hub] 宿主半 v${VERSION}：内部路由 ${ROUTE_PATH}（ping/debug/warmup/raise/taskbar/jobs）已挂载`)
   })
 }
 

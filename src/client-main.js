@@ -54,6 +54,16 @@ const PERSIST_COALESCE_MS = 400
  */
 const DRAFT_POLL_MS = 2000
 
+/**
+ * 后台任务快照的轮询间隔（毫秒）。
+ *
+ * 数据在宿主半的进程内注册表里（`POST /jobs` 单次聚合），没有事件推送到客户端；
+ * 5 秒是「状态栏提醒」粒度下的折中：任务开始一般紧跟回合结束（下一次 tick 就会
+ * 顺带展示），最多迟一个周期显示 / 消失，而任务栏不点灯、也不通知，滞后无伤大雅。
+ * 窗口焦点 / 可见性变化时会立即补拉一次，回到窗口的人不会看到旧状态。
+ */
+const JOBS_POLL_MS = 5000
+
 /** 输入事件触发的草稿扫描合并窗口（毫秒）：连续敲字只读一次存储。 */
 const DRAFT_INPUT_SCAN_MS = 200
 
@@ -191,6 +201,16 @@ function apply(ctx) {
    * 由 `syncDraftsFromList` 从 `dsh.conversation.<id>` 扫描得到，React 侧订阅这个快照。
    */
   const drafts = createSnapshotStore({})
+
+  /**
+   * 「后台任务」表：`{ [sessionId]: { count, label } }`。
+   *
+   * 回合已结束、但宿主半任务注册表里仍有该会话运行中任务的那批会话。数据来自
+   * `host.fetchRunningJobs()`（`POST /jobs` 的轮询快照，见 hub-host 的降级语义），
+   * 只含任务数与首个任务的一行标签。宿主半是旧构建 / 拉取失败时维持上一次的快照，
+   * 拉到空列表时清空——「没有任务」是明确答案，不该被网络失败覆盖。
+   */
+  const runningJobs = createSnapshotStore({})
 
   /**
    * 会话导航历史（状态栏左端 ‹ › 两个按钮背后的那本账）。
@@ -438,9 +458,47 @@ function apply(ctx) {
       // （getRows）与任务栏聚合在同一帧跟上，且不会形成环（内容不变时返回 false）。
       if (syncDraftsFromList(listState)) scheduleTick()
     } catch (error) {
-      // 草稿是锦上添花：读失败只记日志，绝不影响既有四类状态。
+      // 草稿是锦上添花：读失败只记日志，绝不影响其他五类状态。
       console.warn(`[${PLUGIN_ID}] 读取会话草稿失败`, error)
     }
+  }
+
+  /**
+   * 对比两份后台任务表是否等价（键集合 + 每个会话的 count / label 都相同）。
+   *
+   * 轮询每次都会拿到一个全新对象，直接 `set` 会让 React 每 5 秒白重渲染一次；
+   * 内容没变就不发布，与草稿表 `sameDraftMap` 同一套路。
+   * @param {object} previous 上一份快照。
+   * @param {object} next 新快照。
+   * @returns {boolean} 是否等价。
+   */
+  const sameJobMap = (previous, next) => {
+    const prevKeys = Object.keys(previous)
+    const nextKeys = Object.keys(next)
+    if (prevKeys.length !== nextKeys.length) return false
+    for (const key of nextKeys) {
+      if (!Object.hasOwn(previous, key)) return false
+      if (previous[key].count !== next[key].count || previous[key].label !== next[key].label) return false
+    }
+    return true
+  }
+
+  /**
+   * 拉一次「运行中的后台任务」快照并发布到仓库。
+   *
+   * 失败 / 宿主半不支持（`null`）时**保留上一次的快照**：一次网络抖动不该让紫圈闪没；
+   * 「确实没有任务」（空表）才是清空它的明确答案。
+   */
+  const refreshRunningJobs = () => {
+    host.fetchRunningJobs().then((next) => {
+      if (disposed || next === null) return
+      const previous = runningJobs.getSnapshot()
+      if (sameJobMap(previous, next)) return
+      runningJobs.set(next)
+      // 与草稿同样的理由：排一次观察让诊断行（getRows）跟上，任务栏虽不受影响
+      // （后台任务不点灯），但 getTaskbarState / inspect 都读 lastRows。
+      scheduleTick()
+    }).catch(() => { /* 桥接器内部已消化错误；这里再兜一层，绝不让轮询炸出未处理拒绝 */ })
   }
 
   /** 立即观察一次（合并窗口到期时执行）。 */
@@ -504,12 +562,14 @@ function apply(ctx) {
 
       // 3) 状态栏行。正在看当前会话且窗口聚焦时，当前会话的报错视为已读（不再亮红）。
       //    已归档会话这里也一并过滤：任务栏与状态栏必须同一口径。
+      //    「后台任务」表一并喂给模型层：它的归类在全部既有状态之后兜底（紫圈）。
       const derive = () => deriveHubRows({
         list: listState,
         statuses,
         ackErrors: acks.getSnapshot(),
         localUnread: localUnread.getSnapshot(),
         drafts: drafts.getSnapshot(),
+        jobs: runningJobs.getSnapshot(),
         archivedIds: readArchivedSessionIds(),
       })
       let rows = derive()
@@ -650,8 +710,9 @@ function apply(ctx) {
   const focusListeners = []
   const onWindowFocusChange = () => {
     scheduleTick()
-    // 回到窗口 / 页面重新可见时补一次草稿扫描：隐藏期间轮询是停的。
+    // 回到窗口 / 页面重新可见时补一次草稿扫描与后台任务快照：隐藏期间轮询是停的。
     refreshDrafts()
+    refreshRunningJobs()
   }
   try {
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
@@ -719,6 +780,26 @@ function apply(ctx) {
     console.warn(`[${PLUGIN_ID}] 启动草稿轮询失败`, error)
   }
 
+  // ---- 后台任务：宿主半 /jobs 路由的低频轮询（状态栏「后台任务」紫圈）----
+  //
+  // 与草稿轮询同一姿态：隐藏页面跳过（回来时焦点变化会补拉），拉取失败保留上一份快照。
+  let jobsPollTimer = null
+  try {
+    if (typeof setInterval === 'function') {
+      jobsPollTimer = setInterval(() => {
+        if (disposed) return
+        try {
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+        } catch {
+          /* 忽略：读不到可见性就照常拉取 */
+        }
+        refreshRunningJobs()
+      }, JOBS_POLL_MS)
+    }
+  } catch (error) {
+    console.warn(`[${PLUGIN_ID}] 启动后台任务轮询失败`, error)
+  }
+
   // ---- 工作区顶部状态栏 / 顶栏变体 / 行悬停提示 ----
   registerHubSlots({
     ctx,
@@ -729,6 +810,8 @@ function apply(ctx) {
       acks,
       localUnread,
       drafts,
+      // 「后台任务」表（/jobs 轮询快照）：状态栏紫圈的数据源。
+      jobs: runningJobs,
       // 「状态会话」前面的前进 / 后退按钮：快照仓库 + 两个动作。
       history: navHistory,
       goBack: () => navigateHistory(-1),
@@ -764,10 +847,12 @@ function apply(ctx) {
     if (persistTimer !== null) clearTimeout(persistTimer)
     if (draftInputTimer !== null) clearTimeout(draftInputTimer)
     if (draftPollTimer !== null) clearInterval(draftPollTimer)
+    if (jobsPollTimer !== null) clearInterval(jobsPollTimer)
     tickTimer = null
     persistTimer = null
     draftInputTimer = null
     draftPollTimer = null
+    jobsPollTimer = null
     stores.watermarks.flush()
     try {
       cancelPermissionWait()
@@ -801,8 +886,9 @@ function apply(ctx) {
   }, `${PLUGIN_ID}: observers`)
 
   // 首帧先做一次基线观察：已有的历史结局不会变成一串迟到的通知；
-  // 同时把页面重开后仍然存在的草稿读进来，让「未开始」立即出现。
+  // 同时把页面重开后仍然存在的草稿与后台任务读进来，让「未开始」「后台任务」立即出现。
   refreshDrafts()
+  refreshRunningJobs()
   scheduleTick()
 
   // ---- 诊断/测试入口 ----
@@ -834,8 +920,28 @@ function apply(ctx) {
      * @returns {object} 草稿表快照。
      */
     getDrafts: () => ({ ...drafts.getSnapshot() }),
-    /** @returns {Array<object>} 当前状态栏行。 */
+    /** @returns {object} 当前状态栏行。 */
     getRows: () => JSON.parse(JSON.stringify(lastRows)),
+    /**
+     * 有运行中后台任务的会话（排障用）。
+     *
+     * 形状 `{ [sessionId]: { count, label } }`：只有任务数与首个任务的一行标签，
+     * 没有任务输出。想手动刷新可调用 `__DSH_SESSION_HUB__.refreshJobs()`。
+     * @returns {object} 后台任务表快照。
+     */
+    getRunningJobs: () => JSON.parse(JSON.stringify(runningJobs.getSnapshot())),
+    /**
+     * 立刻拉一次后台任务快照（排障用；返回 Promise，解析为新的任务表）。
+     * @returns {Promise<object|null>} 与 fetchRunningJobs 同语义。
+     */
+    refreshJobs: async () => {
+      const next = await host.fetchRunningJobs()
+      if (next !== null && !sameJobMap(runningJobs.getSnapshot(), next)) {
+        runningJobs.set(next)
+        scheduleTick()
+      }
+      return JSON.parse(JSON.stringify(runningJobs.getSnapshot()))
+    },
     /**
      * 会话导航历史快照（「状态会话」前面 ‹ › 两个按钮背后的账本）。
      *
@@ -927,6 +1033,12 @@ function apply(ctx) {
       localUnread: Object.keys(localUnread.getSnapshot()).length,
       /** 状态栏里正在以「未开始」显示的会话数（空白 / 子代理已由模型层过滤）。 */
       draftSessions: lastRows.filter((row) => row.state === 'draft').length,
+      /**
+       * 状态栏里正在以「后台任务」显示的会话数；`jobsRoute` 是宿主半 `/jobs` 路由的
+       * 能力状态（unknown / supported / unsupported），不支持时该状态静默停用。
+       */
+      jobSessions: lastRows.filter((row) => row.state === 'jobs').length,
+      jobsRoute: host.jobsRouteState(),
       /** 已归档会话数（读不到归档集合时为 null：此时状态栏不做归档过滤）。 */
       archivedSessions: readArchivedSessionIds()?.length ?? null,
       /** 窗口此刻是否在前台（与通知静默、待查看记账同源）。 */

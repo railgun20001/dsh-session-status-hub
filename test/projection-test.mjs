@@ -222,6 +222,8 @@ test('路由只认 POST，ping / debug / raise / warmup / taskbar / 未知动作
   assert.equal(ping.body.projectionKey, 'hubTurnOutcome')
   assert.equal(ping.body.raiserRunning, false)
   assert.equal(ping.body.overlayState, 'none')
+  // 能力标记：本构建带有 /jobs 动作（「后台任务」状态的数据源）。
+  assert.equal(ping.body.jobsAction, true)
   // 版本必须与 package.json 一致（宿主半运行时读的就是它），否则两半版本标识会失真。
   assert.equal(ping.body.version, packageVersion())
 
@@ -276,7 +278,7 @@ test('缺少签名头一律 403，且不触发任何窗口 / 任务栏动作', (
   }
   const handler = createRouteHandler(raiser, () => ({ hostHalf: true }))
 
-  for (const action of ['ping', 'debug', 'raise', 'warmup', 'taskbar']) {
+  for (const action of ['ping', 'debug', 'raise', 'warmup', 'taskbar', 'jobs']) {
     const body = action === 'taskbar' ? { state: 'red' } : undefined
     const res = callRoute(handler, 'POST', `${ROUTE_PATH}/${action}`, body, { headers: {} })
     assert.equal(res.status, 403, `${action} 缺签名头必须被拒`)
@@ -298,4 +300,107 @@ test('缺少签名头一律 403，且不触发任何窗口 / 任务栏动作', (
   // 方法不对时仍先报 405：跨站预检（OPTIONS）应当得到 405 而不是「缺签名头」。
   const preflight = callRoute(handler, 'OPTIONS', `${ROUTE_PATH}/raise`, undefined, { headers: {} })
   assert.equal(preflight.status, 405)
+})
+
+test('/jobs 动作：回传聚合回调的结果，回调缺失或抛错时说清原因', () => {
+  const raiser = {
+    warmup: () => true,
+    raise: () => true,
+    overlay: () => true,
+    isRunning: () => false,
+    overlayState: () => 'none',
+  }
+
+  // 回调直接回传：路由只做转发与兜底，不加工内容。
+  const ok = callRoute(createRouteHandler(raiser, undefined, () => ({
+    sessions: [{ sessionId: 's1', jobs: [{ id: 'b1', label: 'npm run watch', status: 'running' }] }],
+  })), 'POST', `${ROUTE_PATH}/jobs`)
+  assert.equal(ok.status, 200)
+  assert.equal(ok.body.sessions[0].sessionId, 's1')
+  assert.equal(ok.body.sessions[0].jobs[0].label, 'npm run watch')
+
+  // 回调缺失（jobs / sessions 服务不在的自定义组合）：明确说「拿不到」，而不是空列表。
+  const missing = callRoute(createRouteHandler(raiser, undefined, undefined), 'POST', `${ROUTE_PATH}/jobs`)
+  assert.equal(missing.status, 200)
+  assert.equal(missing.body.ok, false)
+  assert.equal(missing.body.reason, 'jobs-unavailable')
+
+  // 回调抛错：同样给 ok:false，绝不让路由 500。
+  const boom = callRoute(createRouteHandler(raiser, undefined, () => { throw new Error('炸了') }),
+    'POST', `${ROUTE_PATH}/jobs`)
+  assert.equal(boom.status, 200)
+  assert.equal(boom.body.ok, false)
+  assert.match(boom.body.reason, /jobs snapshot failed/)
+})
+
+test('collectRunningJobs：只收「运行中 + 本会话拥有」的任务，label 有界截断', () => {
+  let jobsHandler = null
+  const disposers = []
+  /** ctx.get 按服务名返回假实现：apply 里的聚合回调读 jobs / sessions 两个服务。 */
+  const ctx = {
+    sessionProjections: { register: () => {} },
+    logger: { info: () => {}, warn: () => {} },
+    effect: (callback) => { disposers.push(callback()) },
+    get: (serviceName) => {
+      if (serviceName === 'jobs') {
+        return {
+          // 所有者围栏之外的读法：任务统归 s1（回调里按 owner === sessionId 过滤），
+          // 另有一条别人的任务，验证不会串到别的会话名下。
+          list: () => [
+            { id: 'bash-run', kind: 'bash', label: 'npm run watch', status: 'running', owner: 's1' },
+            { id: 'bash-stop', kind: 'bash', label: 'stopping job', status: 'stopping', owner: 's1' },
+            { id: 'bash-done', kind: 'bash', label: 'completed job', status: 'completed', owner: 's1' },
+            { id: 'bash-foreign', kind: 'bash', label: 'elsewhere', status: 'running', owner: 'other-session' },
+            { id: 'bash-long', kind: 'bash', label: 'x'.repeat(500), status: 'running', owner: 's1' },
+          ],
+        }
+      }
+      if (serviceName === 'sessions') {
+        return { list: () => [{ id: 's1' }, { id: 's2' }] }
+      }
+      return undefined
+    },
+    inject: (deps, callback) => {
+      callback({
+        effect: (inner) => { disposers.push(inner()) },
+        webServer: {
+          register: (route) => { jobsHandler = route.handler; return () => {} },
+        },
+      })
+    },
+  }
+  apply(ctx)
+  assert.equal(typeof jobsHandler, 'function')
+
+  const captured = callRoute(jobsHandler, 'POST', `${ROUTE_PATH}/jobs`)
+  assert.equal(captured.status, 200)
+  // s2 在注册表里没有任何「运行中 + 自己拥有」的任务，连条目都不该出现；
+  // s1 只剩 running / stopping 两个（completed 与别人的任务都滤掉）。
+  assert.deepEqual(captured.body.sessions.map((entry) => entry.sessionId), ['s1'])
+  const [s1] = captured.body.sessions
+  assert.equal(s1.jobs.length, 3)
+  assert.deepEqual(s1.jobs.map((job) => job.status), ['running', 'stopping', 'running'])
+  assert.equal(s1.jobs[0].label, 'npm run watch')
+  // 超长 label 截到 200 字符 + 省略号（与错误 message 同一条上限）。
+  assert.ok(s1.jobs[2].label.length <= 201, '超长 label 要被截断')
+
+  // 单个会话读失败（注册表竞态）只跳过该会话，不影响其余聚合。
+  ctx.get = (serviceName) => {
+    if (serviceName === 'jobs') {
+      return {
+        list: (sessionId) => {
+          if (sessionId === 's1') throw new Error('race')
+          return [{ id: 'b2', label: 's2 job', status: 'running', owner: sessionId }]
+        },
+      }
+    }
+    if (serviceName === 'sessions') return { list: () => [{ id: 's1' }, { id: 's2' }] }
+    return undefined
+  }
+  const partial = callRoute(jobsHandler, 'POST', `${ROUTE_PATH}/jobs`)
+  assert.equal(partial.status, 200)
+  assert.deepEqual(partial.body.sessions.map((entry) => entry.sessionId), ['s2'])
+  assert.equal(partial.body.sessions[0].jobs[0].label, 's2 job')
+
+  for (const dispose of disposers.splice(0)) dispose()
 })

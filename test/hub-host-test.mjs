@@ -234,3 +234,74 @@ test('探活：宿主半拒了请求（403 缺签名头）时说明是客户端�
     restore()
   }
 })
+
+test('后台任务快照：正常应答归一化成 { count, label }，能力标记 supported', async () => {
+  const { bridge } = harness({
+    onFetch: (url) => {
+      assert.equal(url, 'dsh-session-status-hub/jobs')
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          ok: true,
+          sessions: [
+            { sessionId: 's1', jobs: [{ id: 'bash-1', label: 'npm run watch', status: 'running' }, { id: 'bash-2', label: '', status: 'running' }] },
+            { sessionId: 's2', jobs: [] },
+          ],
+        }),
+      }
+    },
+  })
+  const jobs = await bridge.fetchRunningJobs()
+  assert.deepEqual(jobs, {
+    s1: { count: 2, label: 'npm run watch' },
+  })
+  assert.equal(bridge.jobsRouteState(), 'supported')
+})
+
+test('后台任务快照：unknown-action 锁定降级，之后不再请求、返回 null', async () => {
+  const infos = []
+  const restore = captureConsole('info', (line) => infos.push(line))
+  const { bridge, fetches } = harness({
+    onFetch: () => ({ ok: false, status: 404, json: () => Promise.resolve({ error: 'unknown-action' }) }),
+  })
+  try {
+    const first = await bridge.fetchRunningJobs()
+    assert.equal(first, null)
+    assert.equal(bridge.jobsRouteState(), 'unsupported')
+    assert.match(infos[0], /没有 \/jobs 动作/)
+    // 锁定后不发请求：fetch 计数不再增长。
+    const before = fetches.length
+    await bridge.fetchRunningJobs()
+    await bridge.fetchRunningJobs()
+    assert.equal(fetches.length, before)
+  } finally {
+    restore()
+  }
+})
+
+test('后台任务快照：形状不对 / 网络失败只算「这次没拿到」，不锁死也不告警', async () => {
+  const control = { respond: 'garbage' }
+  const { bridge } = harness({
+    onFetch: () => {
+      if (control.respond === 'garbage') return { ok: true, status: 200, json: () => Promise.resolve('不是对象') }
+      if (control.respond === 'throw') throw new Error('network down')
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, sessions: [{ sessionId: 's1', jobs: [{ id: 'b1', label: 'dev', status: 'running' }] }] }),
+      }
+    },
+  })
+  // 坏形状：null，但能力仍是 unknown（不锁死）。
+  assert.equal(await bridge.fetchRunningJobs(), null)
+  assert.equal(bridge.jobsRouteState(), 'unknown')
+  // 同步抛错：同样只算「这次没拿到」。
+  control.respond = 'throw'
+  assert.equal(await bridge.fetchRunningJobs(), null)
+  assert.equal(bridge.jobsRouteState(), 'unknown')
+  // 恢复正常后下一次又能拿到。
+  control.respond = 'ok'
+  assert.deepEqual(await bridge.fetchRunningJobs(), { s1: { count: 1, label: 'dev' } })
+  assert.equal(bridge.jobsRouteState(), 'supported')
+})

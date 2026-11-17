@@ -90,11 +90,13 @@ function createFallbackT(dict) {
  *   acks: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
  *   unread?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
  *   drafts?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
+ *   jobs?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
  *   history?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
  *   goBack?: () => boolean,
  *   goForward?: () => boolean,
  *   settings?: { subscribe: (listener: () => void) => () => void, getSnapshot: () => object },
- * }} deps 由 client-main 注入的动作、确认表、「后台完成」记账、草稿表、会话导航历史与状态栏显示设置（后四者可选）。
+ * }} deps 由 client-main 注入的动作、确认表、「后台完成」记账、草稿表、后台任务表、
+ * 会话导航历史与状态栏显示设置（后五者可选）。
  * @param {'header'|'chrome'} [variant] 渲染位置：会话标题前，或 Windows 顶栏菜单之后。
  * @returns {Function} React 函数组件。
  */
@@ -104,12 +106,15 @@ function createSessionHubRail(React, deps, variant = 'header') {
   const EMPTY_STATUSES = new Map()
   const EMPTY_UNREAD = {}
   const EMPTY_DRAFTS = {}
+  const EMPTY_JOBS = {}
   /** 归档集合的缺省值：没有 `useWorkspaces` 时不做归档过滤（组件照常渲染）。 */
   const EMPTY_ARCHIVED = Object.freeze([])
   /** 「后台完成」记账的缺省仓库：没有注入时组件照常渲染，只是没有补记的绿点。 */
   const EMPTY_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_UNREAD }
   /** 草稿表的缺省仓库：没有注入时组件照常渲染，只是没有「未开始」灰点。 */
   const EMPTY_DRAFT_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_DRAFTS }
+  /** 后台任务表的缺省仓库：没有注入时组件照常渲染，只是没有「后台任务」青圈。 */
+  const EMPTY_JOBS_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_JOBS }
   /** 会话导航历史的缺省快照：没有注入时两个按钮都置灰（没有可去的地方）。 */
   const EMPTY_NAV = Object.freeze({ entries: Object.freeze([]), index: -1, canBack: false, canForward: false })
   const EMPTY_NAV_STORE = { subscribe: () => () => {}, getSnapshot: () => EMPTY_NAV }
@@ -178,6 +183,10 @@ function createSessionHubRail(React, deps, variant = 'header') {
     '.dsh-hub__chip--unread .dsh-hub__dot{background:var(--dsw-alias-state-success-primary)}',
     // 「未开始」用主题里的三级文字灰：比空闲点更清楚，又比红 / 黄 / 绿低调。
     '.dsh-hub__chip--draft .dsh-hub__dot{background:var(--dsw-alias-label-tertiary)}',
+    // 「后台任务」画成空心紫圈：与实心的「运行中」蓝点立刻区分开——空圈正好像
+    // 「人不在场、活儿在后台转」。颜色用主题静态词表（--dsw-static-violet-*，两套主题
+    // 都定义了 400 / 600 两档），并带字面回落值，旧主题缺令牌时依然可见。
+    '.dsh-hub__chip--jobs .dsh-hub__dot{background:transparent;border:2px solid var(--dsw-static-violet-400,#a78bfa)}',
     '.dsh-hub__title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.dsh-hub__state{flex:none;font-size:10px;line-height:1;color:var(--dsw-alias-label-secondary)}',
     '.dsh-hub__more{flex:none;display:inline-flex;align-items:center;height:26px;padding:0 9px;border:1px dashed var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:1;cursor:pointer;white-space:nowrap}',
@@ -226,6 +235,9 @@ function createSessionHubRail(React, deps, variant = 'header') {
     const localUnread = useSnapshot(deps.unread ?? EMPTY_STORE)
     // 草稿表只带 `{ chars }`（不含正文）；没有注入时退化为空表。
     const drafts = useSnapshot(deps.drafts ?? EMPTY_DRAFT_STORE)
+    // 后台任务表：`{ [sessionId]: { count, label } }`（宿主半 `/jobs` 路由的轮询快照，
+    // 只有计数与首个任务标签）；没有注入时退化为空表。
+    const jobs = useSnapshot(deps.jobs ?? EMPTY_JOBS_STORE)
     // 会话导航历史：只读快照，用来决定 ‹ › 两个按钮此刻可不可点。
     const nav = useSnapshot(deps.history ?? EMPTY_NAV_STORE)
     // 状态栏显示设置：目前只有「是否显示最近会话组」（插件详情页的设置区块可切换）。
@@ -237,6 +249,7 @@ function createSessionHubRail(React, deps, variant = 'header') {
       ackErrors,
       localUnread,
       drafts,
+      jobs,
       blankTitle: t('blank.title'),
       archivedIds,
       now: Date.now(),
@@ -424,12 +437,23 @@ function createSessionHubRail(React, deps, variant = 'header') {
     } else {
       for (const row of visibleRows) {
         const stateLabel = t(`state.${row.state}`)
+        // 「后台任务」附带任务数（>1 显示 ×N）与首个任务标签（只有悬停提示读得到）：
+        // 让人不用切过去就知道是哪个命令还在跑。
+        const isJobs = row.state === 'jobs'
+        const jobCountText = isJobs && Number.isInteger(row.jobCount) && row.jobCount > 1 ? ` ×${row.jobCount}` : ''
+        const jobLabelText = isJobs && typeof row.jobLabel === 'string' && row.jobLabel !== ''
+          ? ` · ${row.jobLabel}`
+          : ''
         statusChildren.push(h('button', {
           key: row.id,
           type: 'button',
           className: `dsh-hub__chip dsh-hub__chip--${row.state}`,
-          title: `${stateLabel}：${row.title}`,
-          'aria-label': `${stateLabel}：${row.title}`,
+          title: isJobs
+            ? `${stateLabel}${jobCountText}：${row.title}${jobLabelText}`
+            : `${stateLabel}：${row.title}`,
+          'aria-label': isJobs
+            ? `${stateLabel}${jobCountText}：${row.title}${jobLabelText}`
+            : `${stateLabel}：${row.title}`,
           onClick: () => {
             try {
               deps.ackError(row.id, row.errorSeq)
@@ -443,7 +467,7 @@ function createSessionHubRail(React, deps, variant = 'header') {
         },
         h('span', { className: 'dsh-hub__dot', 'aria-hidden': 'true' }),
         h('span', { className: 'dsh-hub__title' }, row.title),
-        h('span', { className: 'dsh-hub__state' }, stateLabel)))
+        h('span', { className: 'dsh-hub__state' }, `${stateLabel}${jobCountText}`)))
       }
       if (hiddenCount > 0) {
         statusChildren.push(h('button', {

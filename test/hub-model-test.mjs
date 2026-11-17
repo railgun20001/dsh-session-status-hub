@@ -14,12 +14,14 @@ import {
   failureKindOf,
   hasDraftContent,
   hasLocalUnread,
+  hasRunningJobs,
   isArchivedSession,
   isUnackedFailure,
   MAX_RECENT_ROWS,
   normalizeAckErrors,
   normalizeLocalUnread,
   projectionOf,
+  runningJobEntryOf,
   STATE_ORDER,
 } from '../src/hub-model.js'
 
@@ -82,7 +84,7 @@ test('四类状态都能推导出来', () => {
   ])
 })
 
-test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）> 灰（未开始）', () => {
+test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）> 灰（未开始）> 紫（后台任务）', () => {
   const list = listOf([
     row('running', { running: true, updatedAt: 400 }),
     row('unread', { updatedAt: 300 }),
@@ -97,7 +99,7 @@ test('显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）>
   assert.deepEqual(deriveHubRows({ list, statuses }).map((item) => item.id), [
     'error', 'answer', 'unread', 'running',
   ])
-  assert.deepEqual(STATE_ORDER, { error: 0, answer: 1, unread: 2, running: 3, draft: 4 })
+  assert.deepEqual(STATE_ORDER, { error: 0, answer: 1, unread: 2, running: 3, draft: 4, jobs: 5 })
 })
 
 test('未发送草稿归为「未开始」，显示在所有状态之后（运行中之后）', () => {
@@ -368,4 +370,90 @@ test('isArchivedSession 兼容数组 / Set / Map / 普通对象与坏值', () =>
   assert.equal(isArchivedSession(null, 's1'), false)
   assert.equal(isArchivedSession(undefined, 's1'), false)
   assert.equal(isArchivedSession('s1', 's1'), false)
+})
+
+test('后台任务：回合结束后仍在跑的任务归为「jobs」，排在全部既有状态之后兜底', () => {
+  const list = listOf([
+    row('jobs-only'),
+    row('draft', { updatedAt: 100 }),
+    row('running', { running: true, updatedAt: 400 }),
+    row('unread', { updatedAt: 300 }),
+    row('answer', { updatedAt: 200 }),
+    row('error', { updatedAt: 100 }),
+    row('archived-jobs', { updatedAt: 500 }),
+    row('sub-jobs', { origin: 'subagent', updatedAt: 600 }),
+    row('blank-jobs', { blank: true, updatedAt: 700 }),
+  ], { error: outcome(2, 'error') })
+  const statuses = new Map([
+    ['answer', { pendingInteraction: { kind: 'question' } }],
+    ['unread', { completionUnread: true }],
+  ])
+  const jobs = {
+    'jobs-only': { count: 2, label: 'npm run watch' },
+    draft: { count: 1 },
+    running: { count: 1 },
+    unread: { count: 1 },
+    answer: { count: 1 },
+    error: { count: 1 },
+    'archived-jobs': { count: 1 },
+    'sub-jobs': { count: 1 },
+    'blank-jobs': { count: 1 },
+  }
+
+  // 兜底判定：等待回答 / 报错 / 运行中 / 待查看 / 未开始全部优先，只有空闲且无草稿的
+  // 会话才落到「后台任务」；归档的照常滤掉；子代理默认不进（除非显式打开）。
+  const rows = deriveHubRows({ list, statuses, drafts: { draft: { chars: 1 } }, jobs, archivedIds: ['archived-jobs'] })
+  assert.deepEqual(rows.map((item) => [item.id, item.state]), [
+    ['error', 'error'],
+    ['answer', 'answer'],
+    ['unread', 'unread'],
+    ['running', 'running'],
+    ['draft', 'draft'],
+    ['jobs-only', 'jobs'],
+  ])
+
+  // 计数与标签随行给出：>1 的任务数供 chip 显示 ×N，首个任务标签供悬停提示。
+  const jobsRow = rows.find((item) => item.id === 'jobs-only')
+  assert.equal(jobsRow.jobCount, 2)
+  assert.equal(jobsRow.jobLabel, 'npm run watch')
+  // 归到更高分组的会话同样保留任务元数据（悬停提示还可以带上它）。
+  assert.equal(rows.find((item) => item.id === 'running').jobCount, 1)
+
+  // 蓝色「运行中」的会话同时有后台任务时不会降级；显式打开 includeSubagents 时
+  // 子代理的后台任务也允许显示。
+  const withSubs = deriveHubRows({
+    list, statuses, jobs, includeSubagents: true, archivedIds: ['archived-jobs'],
+  })
+  assert.equal(withSubs.some((item) => item.id === 'sub-jobs' && item.state === 'jobs'), true)
+  // 空白「新会话」占位行即使有任务也不进（与草稿同一条规则：没有内容）。
+  assert.equal(withSubs.some((item) => item.id === 'blank-jobs'), false)
+})
+
+test('hasRunningJobs / runningJobEntryOf 兼容多种形状与坏值', () => {
+  // 实际形状：{ [id]: { count, label } }。
+  assert.equal(hasRunningJobs({ s1: { count: 2, label: 'x' } }, 's1'), true)
+  assert.equal(hasRunningJobs({ s1: { count: 0 } }, 's1'), false)
+  assert.deepEqual(runningJobEntryOf({ s1: { count: 3, label: 'npm run dev' } }, 's1'), { count: 3, label: 'npm run dev' })
+  assert.deepEqual(runningJobEntryOf({ s1: { count: -1 } }, 's1'), { count: 0, label: null })
+  assert.deepEqual(runningJobEntryOf({ s1: { count: 2.7 } }, 's1'), { count: 2, label: null })
+  // 便利形状：数字、字符串、Set / Map、true。
+  assert.equal(hasRunningJobs({ s1: 2 }, 's1'), true)
+  assert.equal(hasRunningJobs({ s1: 0 }, 's1'), false)
+  assert.equal(hasRunningJobs({ s1: 'npm run dev' }, 's1'), true)
+  assert.equal(hasRunningJobs({ s1: '  ' }, 's1'), false)
+  assert.equal(hasRunningJobs(new Set(['s1']), 's1'), true)
+  assert.equal(hasRunningJobs(new Map([['s1', 1]]), 's1'), true)
+  // 坏值一律算「没有」：null / undefined / false / 非对象。
+  assert.equal(hasRunningJobs(undefined, 's1'), false)
+  assert.equal(hasRunningJobs(null, 's1'), false)
+  assert.equal(hasRunningJobs({ s1: null }, 's1'), false)
+  assert.equal(hasRunningJobs({ s1: false }, 's1'), false)
+  assert.equal(hasRunningJobs({ s1: 3 }, 's2'), false)
+})
+
+test('任务栏聚合：后台任务与运行中、未开始一样不点灯', () => {
+  assert.equal(aggregateTaskbarState([{ state: 'jobs' }]), 'none')
+  assert.equal(aggregateTaskbarState([{ state: 'jobs' }, { state: 'unread' }]), 'green')
+  assert.equal(aggregateTaskbarState([{ state: 'jobs' }, { state: 'answer' }]), 'yellow')
+  assert.equal(aggregateTaskbarState([{ state: 'jobs' }, { state: 'error' }]), 'red')
 })

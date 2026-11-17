@@ -21,7 +21,6 @@
 
 /** 探活失败后的重试间隔：不管上次结论如何，5 分钟内只问一次。 */
 export const HOST_HALF_RECHECK_MS = 5 * 60 * 1000
-
 /**
  * 创建宿主半桥接器。
  *
@@ -39,6 +38,8 @@ export const HOST_HALF_RECHECK_MS = 5 * 60 * 1000
  *   checkHostHalf: (force?: boolean) => void,
  *   hostHalfState: () => 'unknown'|'checking'|'present'|'absent',
  *   resetHostHalfCheck: () => void,
+ *   fetchRunningJobs: () => Promise<object|null>,
+ *   jobsRouteState: () => 'unknown'|'supported'|'unsupported',
  * }} 桥接器。
  */
 export function createHostBridge({
@@ -55,6 +56,13 @@ export function createHostBridge({
   /** 宿主半在线状态：unknown（还没问过）/ checking / present / absent。 */
   let hostHalfState = 'unknown'
   let hostHalfCheckedAt = 0
+  /**
+   * `/jobs` 路由的能力标记：null = 还没确认过 / true = 宿主半支持 / false = 旧构建不支持。
+   *
+   * 与探活同理，「确认不支持」只认 `unknown-action` 应答——路由家族在应答、只是没有
+   * 这个动作。网络失败、形状不对都只算「这次没拿到」，不锁死。
+   */
+  let jobsRouteSupported = null
 
   /**
    * 拼出请求头：内部路由要求带签名头（见 hub-identity 的 {@link ROUTE_HEADER}）。
@@ -213,5 +221,98 @@ export function createHostBridge({
     resetHostHalfCheck() {
       hostHalfCheckedAt = 0
     },
+
+    /**
+     * 拉一次「哪些会话还有运行中的后台任务」（宿主半 `/jobs` 路由的聚合快照）。
+     *
+     * ## 为什么走路由而不走 `ctx.jobs`（客户端服务）
+     *
+     * 客户端的 `ctx.jobs.watchRows(sessionId)` 每个会话开一条 roster 流，宿主侧每条流
+     * 都订一份全局任务事件、每次提交后重读一次列表——为「状态栏的一枚紫圈」给每个
+     * 会话都开流，代价与收益不成比例。宿主半的路由单次聚合「全部在挂会话 × 运行中
+     * 任务」，客户端低频轮询即可。
+     *
+     * ## 降级语义（三层，调用方据此决定是否信任结果）
+     *
+     *   - `unknown-action` 应答 → 宿主半是旧构建，没有 `/jobs` 动作：**锁定**不再请求，
+     *     返回 null，`jobsRouteState()` 变为 `unsupported`（「后台任务」状态随后静默消失，
+     *     与 README「格式依赖上游」一类的边界同款措辞）；
+     *   - 网络失败 / 形状不对 → 只算「这次没拿到」，返回 null，下一轮照常再试；
+     *   - 正常应答 → `{ [sessionId]: { count, label } }`（count = 运行中任务数，
+     *     label = 首个任务的一行标签；没有任务的会话不占键）。
+     *
+     * @returns {Promise<object|null>} 会话 → 任务元数据；拿不到时 null。
+     */
+    fetchRunningJobs() {
+      if (jobsRouteSupported === false) return Promise.resolve(null)
+      if (typeof fetchImpl !== 'function') return Promise.resolve(null)
+      let pending
+      try {
+        pending = Promise.resolve(fetchImpl(`${pluginId}/jobs`, {
+          method: 'POST',
+          keepalive: true,
+          headers: signedHeaders(),
+        }))
+      } catch (error) {
+        console.debug(`[${pluginId}] 请求后台任务快照失败：${String(error)}`)
+        return Promise.resolve(null)
+      }
+      return pending
+        .then(async (response) => {
+          if (isDisposed()) return null
+          let body = null
+          try {
+            body = await response?.json?.()
+          } catch {
+            body = null
+          }
+          if (body !== null && typeof body === 'object' && 'error' in body) {
+            if (body.error === 'unknown-action') {
+              jobsRouteSupported = false
+              console.info(
+                `[${pluginId}] 宿主半没有 /jobs 动作（旧构建），「后台任务」状态停用；`
+                + '重启 DSH 对齐版本后自动恢复',
+              )
+            }
+            return null
+          }
+          if (body === null || typeof body !== 'object' || body.ok !== true || !Array.isArray(body.sessions)) {
+            // 不是合法的 /jobs 应答：按「这次没拿到」处理，不锁死、不清空。
+            return null
+          }
+          jobsRouteSupported = true
+          const out = {}
+          for (const entry of body.sessions) {
+            if (entry === null || typeof entry !== 'object') continue
+            const sessionId = entry.sessionId
+            if (typeof sessionId !== 'string' || sessionId === '') continue
+            const count = typeof entry.count === 'number' && Number.isInteger(entry.count) && entry.count > 0
+              ? entry.count
+              : null
+            if (count !== null) {
+              // 直接携带聚合字段（count）的精简形状：label 可选。
+              const label = typeof entry.label === 'string' && entry.label.trim() !== '' ? entry.label : null
+              out[sessionId] = { count, label }
+              continue
+            }
+            const jobs = Array.isArray(entry.jobs)
+              ? entry.jobs.filter((job) => job !== null && typeof job === 'object')
+              : []
+            if (jobs.length === 0) continue
+            const firstLabel = typeof jobs[0].label === 'string' && jobs[0].label !== ''
+              ? jobs[0].label
+              : null
+            out[sessionId] = { count: jobs.length, label: firstLabel }
+          }
+          return out
+        })
+        .catch(() => null)
+    },
+
+    /**
+     * `/jobs` 路由的能力状态（诊断用）。
+     * @returns {'unknown'|'supported'|'unsupported'} unknown = 还没确认 / supported = 已应答过 / unsupported = 旧构建已锁定。
+     */
+    jobsRouteState: () => (jobsRouteSupported === false ? 'unsupported' : jobsRouteSupported === true ? 'supported' : 'unknown'),
   }
 }

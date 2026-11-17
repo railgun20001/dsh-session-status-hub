@@ -14,13 +14,15 @@
  *    - `pendingInteraction.kind` ∈ `approval` | `plan-review` | `question`
  * 3. 草稿表：`{ [sessionId]: { chars } }`，由客户端半从 `dsh.conversation.<id>` 扫描
  *    （见 hub-drafts；只有字符数，没有正文），用来推导「未开始」灰点。
+ * 4. 后台任务表：`{ [sessionId]: { count, label } }`，由客户端半轮询宿主半的
+ *    `/jobs` 路由得到（见 hub-host 的 fetchRunningJobs），用来推导「后台任务」紫圈。
  *
  * ## 状态与优先级
  *
  *   报错（error，红） > 等待回答（answer，黄） > 待查看（unread，绿）
- *   > 运行中（running，蓝） > 未开始（draft，灰）
+ *   > 运行中（running，蓝） > 未开始（draft，灰） > 后台任务（jobs，紫圈）
  *
- * 口径与任务栏一致：**红 → 黄 → 绿 → 蓝 → 灰**，越靠前的颜色越需要你介入。
+ * 口径与任务栏一致：**红 → 黄 → 绿 → 蓝 → 灰 → 紫**，越靠前的颜色越需要你介入。
  * 注意这只决定**显示顺序**；一个会话归到哪一类仍由 `deriveHubRows` 的判定顺序决定
  * （同时在等你回答又还没确认上一轮失败时，按「等待回答」显示，因为它更要求你动手）。
  *
@@ -28,6 +30,13 @@
  * 见 hub-drafts）。它是最弱的一类提示，排在所有状态之后：有报错 / 等待回答 / 待查看 /
  * 运行中时先显示它们，草稿只在前面的条目都排完之后才占位，避免挤掉真正需要你处理的状态。
  * 空白「新会话」占位行只在有草稿时进入状态栏，标题统一显示 `blankTitle`（默认「新会话」）。
+ *
+ * 「后台任务」= 回合已经结束、但宿主半的任务注册表里仍有该会话**运行中**的后台任务
+ * （bash 的 run_in_background 等）。它排在**全部既有状态之后**作为兜底：等待回答 /
+ * 报错 / 运行中 / 待查看 / 未开始都优先显示——那些是回合级别的状态，比「还有
+ * 任务在后台跑」更需要你介入。数据由客户端半轮询宿主半的 `/jobs` 路由得到
+ * （进程内注册表，宿主重启即清空，不存在跨重启的陈旧条目），因此它是唯一一类
+ * **不保证逐帧实时**的状态（最多有一个轮询周期的滞后）。
  *
  * ## 两组条目：状态会话 + 最近会话
  *
@@ -73,10 +82,12 @@ export const HUB_PENDING_KINDS = Object.freeze(['approval', 'plan-review', 'ques
  * 状态排序：数字越小越靠前。
  *
  * 顺序刻意与颜色一致——**红（报错）> 黄（等待回答）> 绿（待查看）
- * > 蓝（运行中）> 灰（未开始）**：一眼扫过去就是「先看红的，最后才看草稿」。
- * 灰放最后是刻意的：「未开始」只是提醒，不该挤占真正需要你处理的状态。
+ * > 蓝（运行中）> 灰（未开始）> 紫（后台任务）**：一眼扫过去就是「先看红的，
+ * 最后才看后台任务」。灰与紫放最后是刻意的：「未开始」与「后台任务」都只是提醒，
+ * 不该挤占真正需要你处理的状态。
  * 注意这只是**显示顺序**，不是状态判定顺序（判定见 deriveHubRows：
- * 等待回答 > 报错 > 运行中 > 待查看 > 未开始，同时在等你时优先按「等待回答」显示）。
+ * 等待回答 > 报错 > 运行中 > 待查看 > 未开始 > 后台任务，既有状态全部优先，
+ * 后台任务作为最后一档兜底）。
  */
 export const STATE_ORDER = Object.freeze({
   error: 0,
@@ -84,6 +95,7 @@ export const STATE_ORDER = Object.freeze({
   unread: 2,
   running: 3,
   draft: 4,
+  jobs: 5,
 })
 
 /** 状态的中文短标签（状态栏 chip 与通知调试用）。 */
@@ -93,6 +105,7 @@ export const STATE_LABELS = Object.freeze({
   running: '运行中',
   unread: '待查看',
   draft: '未开始',
+  jobs: '后台任务',
 })
 
 /** 归到「报错」的回合结局。interrupted 是宿主异常退出后的合成收尾。 */
@@ -239,6 +252,58 @@ export function hasDraftContent(drafts, id) {
 }
 
 /**
+ * 读取一个会话当前运行中的后台任务数量（0 = 没有）。
+ *
+ * 与 hasDraftContent / hasLocalUnread 同一套形状约定：
+ *   - `{ [sessionId]: { count, label? } }`（客户端半轮询宿主半 `/jobs` 后的实际形状）；
+ *   - `{ [sessionId]: number }`（测试 / 调用方便利，> 0 即有）；
+ *   - `Set<string>` / `Map<string, unknown>`（测试便利，命中即算 1 个）。
+ *
+ * 只读「数量」，label 由 {@link runningJobEntryOf} 单独取（两者都命中才算有任务）。
+ *
+ * @param {object|Set<string>|Map<string, unknown>|null|undefined} jobs 后台任务表。
+ * @param {string} id 会话 id。
+ * @returns {boolean} 是否有运行中的后台任务。
+ */
+export function hasRunningJobs(jobs, id) {
+  return runningJobCountOf(jobs, id) > 0
+}
+
+/**
+ * 取一个会话的后台任务计数与首个任务标签（给 chip 的 `×N` 与悬停提示用）。
+ *
+ * @param {object|Set<string>|Map<string, unknown>|null|undefined} jobs 后台任务表。
+ * @param {string} id 会话 id。
+ * @returns {{ count: number, label: string|null }} 计数（>= 0）与第一个任务的标签。
+ */
+export function runningJobEntryOf(jobs, id) {
+  if (jobs === null || jobs === undefined) return { count: 0, label: null }
+  let value
+  if (jobs instanceof Set) value = jobs.has(id) ? 1 : undefined
+  else if (jobs instanceof Map) value = jobs.get(id)
+  else value = jobs[id]
+  if (value === undefined || value === null || value === false) return { count: 0, label: null }
+  if (typeof value === 'number') return { count: Number.isFinite(value) && value > 0 ? Math.floor(value) : 0, label: null }
+  if (typeof value === 'string') return { count: value.trim() !== '' ? 1 : 0, label: null }
+  if (typeof value !== 'object') return { count: 0, label: null }
+  const count = typeof value.count === 'number' && Number.isFinite(value.count) && value.count > 0
+    ? Math.floor(value.count)
+    : 0
+  const label = typeof value.label === 'string' && value.label.trim() !== '' ? value.label : null
+  return { count, label }
+}
+
+/**
+ * 内部：只读计数。
+ * @param {object|Set<string>|Map<string, unknown>|null|undefined} jobs 后台任务表。
+ * @param {string} id 会话 id。
+ * @returns {number} 任务数（>= 0）。
+ */
+function runningJobCountOf(jobs, id) {
+  return runningJobEntryOf(jobs, id).count
+}
+
+/**
  * 判断某会话是否属于「已归档」。
  *
  * ## 为什么归档要单独判
@@ -303,13 +368,17 @@ export const normalizeLocalUnread = normalizeSeqMap
  *   「后台完成、尚未查看」会话（见 {@link hasLocalUnread}）。
  * @param {object|Set<string>|Map<string, unknown>} [input.drafts] 有未发送草稿的会话
  *   （见 {@link hasDraftContent}；正文不会传进来，只传元数据）。
+ * @param {object|Set<string>|Map<string, unknown>} [input.jobs] 有运行中后台任务的会话
+ *   （见 {@link hasRunningJobs}；数据来自宿主半 `/jobs` 路由的轮询快照）。
  * @param {string} [input.blankTitle] 空白「新会话」占位行的显示标题（默认「新会话」）。
  * @param {boolean} [input.includeSubagents] 是否包含子代理会话（默认 false）。
  * @param {readonly string[]|Set<string>|object} [input.archivedIds] 已归档会话 id 集合
  *   （见 {@link isArchivedSession}）；已归档会话一律不显示。
  * @param {number} [input.now] 当前时间（保留给未来排序/过期策略）。
- * @returns {Array<{id: string, title: string, state: string, pendingKind: string|null, errorSeq: number|null, updatedAt: number}>}
- *   按颜色优先级（红 > 黄 > 绿 > 蓝 > 灰）与更新时间排好序的行。
+ * @returns {Array<{id: string, title: string, state: string, pendingKind: string|null, errorSeq: number|null, jobCount: number|null, jobLabel: string|null, updatedAt: number}>}
+ *   按颜色优先级（红 > 黄 > 绿 > 蓝 > 灰 > 紫）与更新时间排好序的行；
+ *   `jobCount` / `jobLabel` 只在该会话确实有运行中任务时给出（其他会话为 null），
+ *   与它最终归到哪一类无关——分组更高的 chip 也可以在悬停提示里带上任务数。
  */
 export function deriveHubRows({
   list,
@@ -317,6 +386,7 @@ export function deriveHubRows({
   ackErrors = {},
   localUnread = {},
   drafts = {},
+  jobs = {},
   blankTitle = '新会话',
   includeSubagents = false,
   archivedIds = null,
@@ -351,16 +421,23 @@ export function deriveHubRows({
     // 「待查看」有两个来源：官方 completionUnread（非主视图会话），以及本插件为
     // 「窗口不在前台时完成的当前会话」补记的记账（官方对主视图会话永远不会置位）。
     const unread = status?.completionUnread === true || hasLocalUnread(localUnread, id)
+    // 后台任务：回合已结束、但宿主半注册表里还有该会话运行中的任务。
+    // 计数与标签先算出来（悬停提示不管归类都要用），归类时它排在全部既有状态之后兜底。
+    const { count: jobCount, label: jobLabel } = runningJobEntryOf(jobs, id)
 
-    // 判定顺序（一个会话只归一类，取第一个命中的）：等待回答 > 报错 > 运行中 > 待查看 > 未开始。
-    // 这与 STATE_ORDER（显示顺序 红 > 黄 > 绿 > 蓝 > 灰）是两件事：同时「等你回答」又「上一轮
-    // 还没确认失败」时，归为「等待回答」——它才是当下马上要你动手的那件事。
+    // 判定顺序（一个会话只归一类，取第一个命中的）：
+    //   等待回答 > 报错 > 运行中 > 待查看 > 未开始 > 后台任务。
+    // 这与 STATE_ORDER（显示顺序 红 > 黄 > 绿 > 蓝 > 灰 > 紫）是两件事：同时「等你回答」
+    // 又「上一轮还没确认失败」时，归为「等待回答」——它才是当下马上要你动手的那件事；
+    // 「后台任务」刻意放到最后一档兜底：回合级状态（含未开始草稿）全部显示优先，
+    // 前面任何一类命中时都不再降级到它。
     let state = null
     if (pendingKind !== null) state = 'answer'
     else if (failed) state = 'error'
     else if (running) state = 'running'
     else if (unread) state = 'unread'
     else if (draft) state = 'draft'
+    else if (jobCount > 0) state = 'jobs'
     if (state === null) continue
 
     rows.push({
@@ -369,11 +446,13 @@ export function deriveHubRows({
       state,
       pendingKind,
       errorSeq: failed && typeof projection?.seq === 'number' ? projection.seq : null,
+      jobCount: jobCount > 0 ? jobCount : null,
+      jobLabel,
       updatedAt: Number.isFinite(row.updatedAt) ? row.updatedAt : 0,
     })
   }
 
-  // 显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）> 灰（未开始）；
+  // 显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）> 灰（未开始）> 紫（后台任务）；
   // 同一类里更新时间新的靠前，最后用 id 兜底保证顺序稳定（避免 React key 跳动）。
   rows.sort((a, b) => {
     const byState = (STATE_ORDER[a.state] ?? 99) - (STATE_ORDER[b.state] ?? 99)
@@ -461,9 +540,9 @@ export function deriveRecentRows({
 /**
  * 把状态栏行聚合为任务栏状态（红 > 黄 > 绿 > 无）。
  *
- * 绿只来自「待查看」（未读完成），**不含运行中，也不含「未开始」草稿**：运行中与草稿
- * 都不需要你立刻处理，任务栏常亮只会盖掉真正需要你介入的红/黄提示。它们仍然在状态栏
- * chip 里可见。
+ * 绿只来自「待查看」（未读完成），**不含运行中、未开始草稿，也不含后台任务**：
+ * 三者都不需要你立刻处理，任务栏常亮只会盖掉真正的红/黄提示。它们仍然在状态栏
+ * chip 里可见（蓝色脉冲 / 灰点 / 青圈）。
  * @param {Array<{state: string}>} rows 状态栏行。
  * @returns {'red'|'yellow'|'green'|'none'} 任务栏状态。
  */

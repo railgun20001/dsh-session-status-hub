@@ -502,11 +502,13 @@ test('新一轮完成弹「任务完成」，点通知跳回会话并把窗口�
     assert.equal(harness.state.dispatched[0].type, 'dsh-session-status-hub:open-session')
     assert.equal(harness.state.dispatched[0].detail.sessionId, 's1')
     // 并且请求宿主半把窗口提到前台（渲染进程自己做不到）。
+    // 断言只看「窗口控制」家族的请求：/jobs 的后台任务轮询与它无关。
     assert.deepEqual(
-      harness.state.fetches.map((call) => call.url),
+      harness.state.fetches.map((call) => call.url).filter((url) => url !== 'dsh-session-status-hub/jobs'),
       ['dsh-session-status-hub/warmup', 'dsh-session-status-hub/raise'],
     )
-    assert.equal(harness.state.fetches[1].options.method, 'POST')
+    const raiseCall = harness.state.fetches.find((call) => call.url === 'dsh-session-status-hub/raise')
+    assert.equal(raiseCall.options.method, 'POST')
   } finally {
     harness.dispose()
     harness.restore()
@@ -856,9 +858,9 @@ test('读不到投影值只代表「还没有回合结局」，探活到宿主�
   try {
     await settle()
     assert.deepEqual(
-      harness.state.fetches.map((call) => call.url),
+      harness.state.fetches.map((call) => call.url).filter((url) => url !== 'dsh-session-status-hub/jobs'),
       ['dsh-session-status-hub/ping'],
-      '值缺失时应当探活一次',
+      '值缺失时应当探活一次（后台任务轮询不算在内）',
     )
     assert.equal(globalThis.__DSH_SESSION_HUB__.inspect().hostHalf, 'present')
     assert.deepEqual(warnings, [], '宿主半在线时不许有任何告警')
@@ -1248,8 +1250,10 @@ test('窗口已聚焦时点通知不再重复请求前置窗口（不会触碰�
     await settle()
     assert.equal(harness.state.notifications.length, 1)
     harness.state.notifications[0].onclick()
+    // 断言只看「窗口控制」家族的请求：聚焦时点通知只应有 warmup，没有 raise
+    // （后台任务的 /jobs 轮询与它无关）。
     assert.deepEqual(
-      harness.state.fetches.map((call) => call.url),
+      harness.state.fetches.map((call) => call.url).filter((url) => url !== 'dsh-session-status-hub/jobs'),
       ['dsh-session-status-hub/warmup'],
     )
   } finally {
@@ -1552,6 +1556,171 @@ test('显示设置：默认显示「最近会话」，setConfig 关掉后快照�
     api.setConfig({ showRecentSessions: true })
     assert.equal(api.getSettings().showRecentSessions, true)
   } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+// ---- 后台任务（状态栏第六类「jobs」：紫圈，轮询宿主半 /jobs）----
+
+/**
+ * 造一个会响应 /jobs 的 onFetch 桩。
+ * @param {object} sessions `/jobs` 应答里的 sessions 数组。
+ * @returns {(url: string) => object} fetch 处理器。
+ */
+function jobsOnFetch(sessions) {
+  return (url) => {
+    if (url === 'dsh-session-status-hub/jobs') {
+      return { ok: true, status: 200, json: () => Promise.resolve({ ok: true, sessions }) }
+    }
+    return { ok: true, status: 200, json: () => Promise.resolve({ host: 'dsh-session-status-hub', projectionKey: 'hubTurnOutcome' }) }
+  }
+}
+
+test('后台任务：回合结束后仍在跑的任务显示为「后台任务」，不点任务栏、不弹通知', async () => {
+  const harness = await createHarness({
+    sessions: [sessionRow('s1'), sessionRow('s2', { retainedBy: { mainView: 1 } })],
+    projections: { s1: turnEnd(10, 'completed') },
+    onFetch: jobsOnFetch([
+      { sessionId: 's1', jobs: [{ id: 'bash-1', label: 'npm run watch', status: 'running' }] },
+      { sessionId: 's2', jobs: [{ id: 'bash-2', label: 'build', status: 'running' }] },
+    ]),
+  })
+  try {
+    await settle()
+    const api = globalThis.__DSH_SESSION_HUB__
+
+    // 任务表快照已归一化：只有元数据（count / label），没有任务输出。
+    assert.deepEqual(api.getRunningJobs(), {
+      s1: { count: 1, label: 'npm run watch' },
+      s2: { count: 1, label: 'build' },
+    })
+    // s1：回合已完成（completed）、无更高状态 → 「后台任务」紫圈兜底。
+    // s2：正在主视图且空白 → 与草稿同一条规则，没有其他状态时也落到「后台任务」。
+    const rows = api.getRows()
+    assert.deepEqual(rows.map((item) => [item.id, item.state, item.jobCount, item.jobLabel]), [
+      ['s1', 'jobs', 1, 'npm run watch'],
+      ['s2', 'jobs', 1, 'build'],
+    ])
+    // inspect 的计数与能力标记。
+    assert.equal(api.inspect().jobSessions, 2)
+    assert.equal(api.inspect().jobsRoute, 'supported')
+
+    // 任务栏不点灯（后台任务是常态，不该盖掉红 / 黄 / 绿）；也绝不为此弹通知。
+    assert.equal(api.getTaskbarState(), 'none')
+    assert.equal(harness.state.notifications.length, 0)
+    // 任务还都在跑：refreshJobs 的返回就是当前任务表（幂等读，不会多弹请求之外的行为）。
+    assert.deepEqual(await api.refreshJobs(), {
+      s1: { count: 1, label: 'npm run watch' },
+      s2: { count: 1, label: 'build' },
+    })
+    await settle()
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('后台任务：等待回答 / 运行中等既有状态全部优先，紫圈只兜底空状态会话', async () => {
+  const harness = await createHarness({
+    sessions: [
+      sessionRow('ans'),
+      sessionRow('busy', { running: true }),
+      sessionRow('idle'),
+    ],
+    statuses: {
+      ans: { pendingInteraction: { kind: 'question', key: 'q1' } },
+      busy: { running: true },
+    },
+    onFetch: jobsOnFetch([
+      { sessionId: 'ans', jobs: [{ id: 'b1', label: 'dev', status: 'running' }] },
+      { sessionId: 'busy', jobs: [{ id: 'b2', label: 'build', status: 'running' }] },
+      { sessionId: 'idle', jobs: [{ id: 'b3', label: 'watch', status: 'running' }] },
+    ]),
+  })
+  try {
+    await settle()
+    const rows = globalThis.__DSH_SESSION_HUB__.getRows()
+    assert.deepEqual(rows.map((item) => [item.id, item.state]), [
+      ['ans', 'answer'],
+      ['busy', 'running'],
+      ['idle', 'jobs'],
+    ])
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('后台任务：拉取失败保留上一份快照，拿到空列表才清空', async () => {
+  /** 控制本轮 /jobs 应答：ok（给任务）/ fail（网络 500）/ empty（明确没有任务）。 */
+  const mode = { value: 'ok' }
+  const harness = await createHarness({
+    sessions: [sessionRow('s1')],
+    onFetch: (url) => {
+      if (url !== 'dsh-session-status-hub/jobs') {
+        return { ok: true, status: 200, json: () => Promise.resolve({ host: 'dsh-session-status-hub', projectionKey: 'hubTurnOutcome' }) }
+      }
+      if (mode.value === 'fail') return { ok: false, status: 500, json: () => Promise.resolve(null) }
+      if (mode.value === 'empty') return { ok: true, status: 200, json: () => Promise.resolve({ ok: true, sessions: [] }) }
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, sessions: [{ sessionId: 's1', jobs: [{ id: 'b1', label: 'npm test', status: 'running' }] }] }),
+      }
+    },
+  })
+  try {
+    await settle()
+    const api = globalThis.__DSH_SESSION_HUB__
+    assert.deepEqual(api.getRunningJobs(), { s1: { count: 1, label: 'npm test' } })
+    assert.equal(api.getRows().some((row) => row.state === 'jobs'), true)
+
+    // 网络失败：紫圈保持，不让一次抖动把状态闪没。
+    mode.value = 'fail'
+    assert.deepEqual(await api.refreshJobs(), { s1: { count: 1, label: 'npm test' } })
+    await settle()
+    assert.equal(api.getRows().some((row) => row.state === 'jobs'), true)
+
+    // 明确的空列表：任务都结束了，紫圈熄灭（行要等下一次观察刷新，settle 等 30ms 合并窗口）。
+    mode.value = 'empty'
+    assert.deepEqual(await api.refreshJobs(), {})
+    await settle()
+    assert.equal(api.getRows().some((row) => row.state === 'jobs'), false)
+  } finally {
+    harness.dispose()
+    harness.restore()
+  }
+})
+
+test('后台任务：宿主半是旧构建（unknown-action）时状态停用且不再轮询', async () => {
+  const infos = []
+  const originalInfo = console.info
+  console.info = (...args) => { infos.push(args.join(' ')) }
+  let jobsCalls = 0
+  const harness = await createHarness({
+    sessions: [sessionRow('s1')],
+    onFetch: (url) => {
+      if (url === 'dsh-session-status-hub/jobs') {
+        jobsCalls += 1
+        return { ok: false, status: 404, json: () => Promise.resolve({ error: 'unknown-action' }) }
+      }
+      return { ok: true, status: 200, json: () => Promise.resolve({ host: 'dsh-session-status-hub', projectionKey: 'hubTurnOutcome' }) }
+    },
+  })
+  try {
+    await settle()
+    const api = globalThis.__DSH_SESSION_HUB__
+    assert.deepEqual(api.getRunningJobs(), {})
+    assert.equal(api.getRows().some((row) => row.state === 'jobs'), false)
+    assert.equal(api.inspect().jobsRoute, 'unsupported')
+    assert.match(infos.find((line) => line.includes('/jobs')) ?? '', /旧构建/)
+    // 锁定后不再请求（诊断入口 refreshJobs 也直接短路）。
+    const before = jobsCalls
+    await api.refreshJobs()
+    assert.equal(jobsCalls, before, '锁定降级后不再发 /jobs 请求')
+  } finally {
+    console.info = originalInfo
     harness.dispose()
     harness.restore()
   }
