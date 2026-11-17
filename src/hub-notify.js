@@ -14,9 +14,12 @@
  * 3. **落地日志**：桌面端渲染进程的控制台平时没人看，而「通知没弹」是现场过去之后才被
  *    发现的故障。把权限、构造结果、`show` / `failed` / `no-event` 留在 localStorage 里，
  *    事后能判断是插件没发、Electron 没交给系统，还是系统没显示。
- * 4. **撤回过期通知**：Windows 的 toast 一旦弹出，插件不主动 `close()` 它就会一直留在屏幕上
- *    （`requireInteraction` 的「需要你回应」）或操作中心里。本层登记还活着的通知，供调用方
+ * 4. **撤回过期通知**：Windows 的 toast 一旦弹出，插件不主动 `close()` 它就会一直留在
+ *    操作中心里（屏幕上那一条按系统默认时间淡出）。本层登记还活着的通知，供调用方
  *    在「用户已经看了这个会话」或「待交互已经处理」时撤掉；不登记就只能等它自己消失。
+ *
+ * 另外有一条**刻意不做**的事：不给通知传 `requireInteraction`。原因见 `show()` 里的注释
+ * ——它会让 Windows 自动追一个「关闭」按钮，而点那个按钮会被当成「点了通知」。
  *
  * @module dsh-session-status-hub/hub-notify
  */
@@ -308,8 +311,18 @@ export function createNotifySink({
         // 同一个现场里 renotify=true 与通知丢失同时出现，少一个变量少一次踩坑。
         // silent=true 表示不出声。
         silent: config.sound !== true,
-        // 需要你回应的通知常驻，直到用户处理（Windows 上也会留在操作中心）。
-        requireInteraction: notification.category === 'answer',
+        // 刻意**不传** `requireInteraction`（2026-11-17 用户实测 + 上游记录）。
+        //
+        // Windows 的 toast 有一条硬规则：想要「不会自动消失」就必须至少带一个动作按钮，
+        // 于是 Chromium 会自动替这条通知追加一个「关闭」按钮（whatwg/notifications#236）。
+        // 那个按钮不是我们画的，点它的激活事件却会以 `click` 回给我们（electron#27088：
+        // `timeoutType: 'never'` 的通知点「关闭」也会走到 click 回调），结果就是
+        // **点「关闭」也跳回会话、还把窗口提到前台**——用户根本没想切对话。
+        //
+        // Windows 的 toast 右上角本来就有原生「×」，我们自己再送一个「关闭」纯属重复，
+        // 所以这里一律不提 `requireInteraction`：让 toast 按系统默认时间从屏幕上淡出，
+        // 它仍然留在通知中心里等用户处理，撤回逻辑（`dismissSession` /
+        // `dismissStaleAnswers`）也不受影响。
       })
     } catch (error) {
       record({ ...base, tag, stage: 'construct-failed', detail: String(error) })

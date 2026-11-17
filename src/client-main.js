@@ -899,9 +899,11 @@ function apply(ctx) {
       notifySink.show({
         sessionId: target,
         dedupeKey: `test:${Date.now()}`,
-        // 借用 `answer` 只是为了常驻（`requireInteraction`）；标识用铃铛而不是黄点，
-        // 免得一条测试通知被看成「真的在等你回应」。
-        category: 'answer',
+        // 类别只是身份标签：这条通知的标题 / 正文 / 圆点都在下面显式给出，不走
+        // `describeNotification`。用 `test` 而不是借用 `answer`——后者过去只是为了拿
+        // `requireInteraction` 常驻，而那个选项已经不再使用（它会让 Windows 自动加一个
+        // 「关闭」按钮，点它会被当成点了通知），借类别也就没有意义了。
+        category: 'test',
         // 测试通知不登记为「可自动撤回」：它没有对应的待交互，也不该在窗口正看着
         // 当前会话时被下一次观察当成已读立刻撤掉。
         dismissible: false,

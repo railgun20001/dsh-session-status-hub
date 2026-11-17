@@ -130,15 +130,17 @@ test('tag 交给系统的是短哈希，可读身份只进诊断日志', () => {
   assert.equal(entry.tag, toast.options.tag)
 })
 
-test('silent 跟随 sound，requireInteraction 只给「需要你回应」', (t) => {
+test('silent 跟随 sound；任何类别都不带 requireInteraction（否则 Windows 会加「关闭」按钮）', (t) => {
   const h = harness()
   globalThis.Notification = fakeNotification(h.state)
   h.sink.show(notification({ dedupeKey: 'a' }))
   assert.equal(h.state.created[0].options.silent, false)
-  assert.equal(h.state.created[0].options.requireInteraction, false)
+  assert.equal('requireInteraction' in h.state.created[0].options, false)
 
+  // 「需要你回应」过去靠 requireInteraction 常驻；现在一律不带——Windows 会为持续通知
+  // 自动追加一个「关闭」按钮，而点它会被 Electron 当成一次 click（于是点关闭也跳会话）。
   h.sink.show(notification({ dedupeKey: 'b', category: 'answer', marker: '🟡' }))
-  assert.equal(h.state.created[1].options.requireInteraction, true)
+  assert.equal('requireInteraction' in h.state.created[1].options, false)
 
   const quiet = harness()
   quiet.setConfig({ colorMarkers: true, sound: false })

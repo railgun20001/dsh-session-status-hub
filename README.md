@@ -162,6 +162,12 @@ notification plugins become noise. Titles carry a colour emoji (🟢 done, 🟡 
 failed, 🟠 max-tokens) from the same palette as the rail and the taskbar dot; Windows toasts
 always use the app icon, so text is the only place colour can live.
 
+Notifications never set `requireInteraction`. Windows only keeps a toast on screen if it carries
+an action button, so Chromium would silently append a "Close" button — and activating that button
+comes back to the page as a `click` (`electron#27088`), i.e. "Close" would also jump to the
+Session and raise the window. Windows already ships a native × in the toast's corner, so toasts
+simply fade out after the system timeout and stay in the notification centre until handled.
+
 ## Requirements
 
 - DeepSeek Harness with the `sessionProjections`, `sessions` and `uiSession` services. The
