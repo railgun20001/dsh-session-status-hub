@@ -130,17 +130,24 @@ test('tag 交给系统的是短哈希，可读身份只进诊断日志', () => {
   assert.equal(entry.tag, toast.options.tag)
 })
 
-test('silent 跟随 sound；任何类别都不带 requireInteraction（否则 Windows 会加「关闭」按钮）', (t) => {
+test('silent 跟随 sound；只有「需要你回应」常驻并自带「打开对话」按钮', (t) => {
   const h = harness()
   globalThis.Notification = fakeNotification(h.state)
   h.sink.show(notification({ dedupeKey: 'a' }))
   assert.equal(h.state.created[0].options.silent, false)
+  // 其他类别：不常驻、不带按钮（Windows 只在常驻 toast 上强制要按钮）。
   assert.equal('requireInteraction' in h.state.created[0].options, false)
+  assert.equal('actions' in h.state.created[0].options, false)
 
-  // 「需要你回应」过去靠 requireInteraction 常驻；现在一律不带——Windows 会为持续通知
-  // 自动追加一个「关闭」按钮，而点它会被 Electron 当成一次 click（于是点关闭也跳会话）。
+  // 「需要你回应」要常驻：Windows 因此强制它带一颗动作按钮；按钮由我们自己给，
+  // 文案就是行为——点它跳回会话。不能让平台自动补「关闭」：那颗按钮点下去同样
+  // 以 click 回到页面（electron#27088），名字和行为拧着。
   h.sink.show(notification({ dedupeKey: 'b', category: 'answer', marker: '🟡' }))
-  assert.equal('requireInteraction' in h.state.created[1].options, false)
+  assert.equal(h.state.created[1].options.requireInteraction, true)
+  assert.deepEqual(
+    h.state.created[1].options.actions,
+    [{ type: 'button', text: '打开对话' }],
+  )
 
   const quiet = harness()
   quiet.setConfig({ colorMarkers: true, sound: false })

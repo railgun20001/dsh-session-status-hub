@@ -173,11 +173,23 @@ notification plugins become noise. Titles carry a colour emoji (🟢 done, 🟡 
 failed, 🟠 max-tokens) from the same palette as the rail and the taskbar dot; Windows toasts
 always use the app icon, so text is the only place colour can live.
 
-Notifications never set `requireInteraction`. Windows only keeps a toast on screen if it carries
-an action button, so Chromium would silently append a "Close" button — and activating that button
-comes back to the page as a `click` (`electron#27088`), i.e. "Close" would also jump to the
-Session and raise the window. Windows already ships a native × in the toast's corner, so toasts
-simply fade out after the system timeout and stay in the notification centre until handled.
+**"Needs your response" stays on screen and carries its own "打开对话" button.** The Windows
+rule to reason about first: a toast may only stay on screen (not auto-dismiss) if it carries
+at least one action button. Without one, the platform silently appends a "Close" button
+(whatwg/notifications#236), and activating that auto button comes back to the page as a
+`click` (`electron#27088`) — so "Close" would also jump to the Session and raise the window,
+with the label and the behaviour contradicting each other. The plugin therefore:
+
+- keeps `requireInteraction` **on for the answer category only**: a question notification is
+  worth exactly as much as its ability to be seen while you are away from the screen (0.4.1
+  briefly dropped it, and the toast sinking into the notification centre after a few seconds
+  read as "notifications stopped popping"; restored in 0.5.x);
+- provides the required button itself — `actions: [{ type: 'button', text: '打开对话' }]` —
+  so clicking the button and clicking the body are the same `click`, both jump to the
+  Session, while the native × in the corner still just closes. Electron 42+ supports
+  `actions` buttons on Windows and renders the provided text;
+- leaves the other four categories non-persistent: they flash by and settle in the
+  notification centre.
 
 ## Requirements
 

@@ -486,6 +486,7 @@ test('新一轮完成弹「任务完成」，点通知跳回会话并把窗口�
     assert.match(toast.options.tag, /^dsh[0-9a-f]{12}$/)
     assert.ok(toast.options.tag.length <= 16, 'tag 不能超过实测安全长度 16 字符')
     assert.equal('requireInteraction' in toast.options, false)
+    assert.equal('actions' in toast.options, false)
     assert.equal(toast.options.silent, false)
     // 每条事件一个唯一 tag，且刻意不传 renotify：本机实测「同 tag 替换」那条平台
     // 路径会把通知整条丢掉（连 Windows 都收不到提交），所以绝不走它。
@@ -679,7 +680,7 @@ test('运行失败弹「任务失败」，正文带错误信息', async () => {
   }
 })
 
-test('待回答 / 待审批弹「需要你回应」通知，且不带 requireInteraction', async () => {
+test('待回答 / 待审批弹「需要你回应」通知：常驻并自带「打开对话」按钮', async () => {
   const harness = await createHarness({ sessions: [sessionRow('s1')] })
   try {
     await settle()
@@ -689,9 +690,14 @@ test('待回答 / 待审批弹「需要你回应」通知，且不带 requireInt
     assert.equal(harness.state.notifications.length, 1)
     assert.equal(harness.state.notifications[0].title, '🟡 DSH · 需要你回应')
     assert.equal(harness.state.notifications[0].options.body, '需要你回答：会话 s1')
-    // 不带 requireInteraction：Windows 会给持续通知自动加一个「关闭」按钮，点它会被
-    // Electron 当成 click 回传（点关闭也跳会话）。原生「×」已经够用，见 hub-notify。
-    assert.equal('requireInteraction' in harness.state.notifications[0].options, false)
+    // 问答通知必须常驻（否则只在屏幕上闪几秒，人不在就等于没弹）；
+    // Windows 又强制常驻 toast 必须带按钮，所以按钮由插件自己给：
+    // 「打开对话」——点它和点正文走同一个 click，都跳回会话。
+    assert.equal(harness.state.notifications[0].options.requireInteraction, true)
+    assert.deepEqual(
+      harness.state.notifications[0].options.actions,
+      [{ type: 'button', text: '打开对话' }],
+    )
 
     // 同一待交互的后续推送不再重复弹。
     harness.setStatus('s1', { running: true, pendingInteraction: { key: 'q1', kind: 'question', sessionId: 's1' } })
