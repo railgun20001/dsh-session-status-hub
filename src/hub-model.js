@@ -15,12 +15,12 @@
  * 3. 草稿表：`{ [sessionId]: { chars } }`，由客户端半从 `dsh.conversation.<id>` 扫描
  *    （见 hub-drafts；只有字符数，没有正文），用来推导「未开始」灰点。
  * 4. 后台任务表：`{ [sessionId]: { count, label } }`，由客户端半轮询宿主半的
- *    `/jobs` 路由得到（见 hub-host 的 fetchRunningJobs），用来推导「后台任务」紫圈。
+ *    `/jobs` 路由得到（见 hub-host 的 fetchRunningJobs），用来推导「后台任务」青点。
  *
  * ## 状态与优先级
  *
  *   报错（error，红） > 等待回答（answer，黄） > 待查看（unread，绿）
- *   > 运行中（running，蓝） > 未开始（draft，灰） > 后台任务（jobs，紫圈）
+ *   > 运行中（running，蓝） > 未开始（draft，灰） > 后台任务（jobs，青点）
  *
  * 口径与任务栏一致：**红 → 黄 → 绿 → 蓝 → 灰 → 紫**，越靠前的颜色越需要你介入。
  * 注意这只决定**显示顺序**；一个会话归到哪一类仍由 `deriveHubRows` 的判定顺序决定
@@ -82,8 +82,8 @@ export const HUB_PENDING_KINDS = Object.freeze(['approval', 'plan-review', 'ques
  * 状态排序：数字越小越靠前。
  *
  * 顺序刻意与颜色一致——**红（报错）> 黄（等待回答）> 绿（待查看）
- * > 蓝（运行中）> 灰（未开始）> 紫（后台任务）**：一眼扫过去就是「先看红的，
- * 最后才看后台任务」。灰与紫放最后是刻意的：「未开始」与「后台任务」都只是提醒，
+ * > 蓝（运行中）> 灰（未开始）> 青（后台任务）**：一眼扫过去就是「先看红的，
+ * 最后才看后台任务」。灰与青放最后是刻意的：「未开始」与「后台任务」都只是提醒，
  * 不该挤占真正需要你处理的状态。
  * 注意这只是**显示顺序**，不是状态判定顺序（判定见 deriveHubRows：
  * 等待回答 > 报错 > 运行中 > 待查看 > 未开始 > 后台任务，既有状态全部优先，
@@ -376,7 +376,7 @@ export const normalizeLocalUnread = normalizeSeqMap
  *   （见 {@link isArchivedSession}）；已归档会话一律不显示。
  * @param {number} [input.now] 当前时间（保留给未来排序/过期策略）。
  * @returns {Array<{id: string, title: string, state: string, pendingKind: string|null, errorSeq: number|null, jobCount: number|null, jobLabel: string|null, updatedAt: number}>}
- *   按颜色优先级（红 > 黄 > 绿 > 蓝 > 灰 > 紫）与更新时间排好序的行；
+ *   按颜色优先级（红 > 黄 > 绿 > 蓝 > 灰 > 青）与更新时间排好序的行；
  *   `jobCount` / `jobLabel` 只在该会话确实有运行中任务时给出（其他会话为 null），
  *   与它最终归到哪一类无关——分组更高的 chip 也可以在悬停提示里带上任务数。
  */
@@ -427,7 +427,7 @@ export function deriveHubRows({
 
     // 判定顺序（一个会话只归一类，取第一个命中的）：
     //   等待回答 > 报错 > 运行中 > 待查看 > 未开始 > 后台任务。
-    // 这与 STATE_ORDER（显示顺序 红 > 黄 > 绿 > 蓝 > 灰 > 紫）是两件事：同时「等你回答」
+    // 这与 STATE_ORDER（显示顺序 红 > 黄 > 绿 > 蓝 > 灰 > 青）是两件事：同时「等你回答」
     // 又「上一轮还没确认失败」时，归为「等待回答」——它才是当下马上要你动手的那件事；
     // 「后台任务」刻意放到最后一档兜底：回合级状态（含未开始草稿）全部显示优先，
     // 前面任何一类命中时都不再降级到它。
@@ -452,7 +452,7 @@ export function deriveHubRows({
     })
   }
 
-  // 显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）> 灰（未开始）> 紫（后台任务）；
+  // 显示顺序：红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）> 灰（未开始）> 青（后台任务）；
   // 同一类里更新时间新的靠前，最后用 id 兜底保证顺序稳定（避免 React key 跳动）。
   rows.sort((a, b) => {
     const byState = (STATE_ORDER[a.state] ?? 99) - (STATE_ORDER[b.state] ?? 99)

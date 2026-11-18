@@ -183,10 +183,14 @@ function createSessionHubRail(React, deps, variant = 'header') {
     '.dsh-hub__chip--unread .dsh-hub__dot{background:var(--dsw-alias-state-success-primary)}',
     // 「未开始」用主题里的三级文字灰：比空闲点更清楚，又比红 / 黄 / 绿低调。
     '.dsh-hub__chip--draft .dsh-hub__dot{background:var(--dsw-alias-label-tertiary)}',
-    // 「后台任务」画成空心紫圈：与实心的「运行中」蓝点立刻区分开——空圈正好像
-    // 「人不在场、活儿在后台转」。颜色用主题静态词表（--dsw-static-violet-*，两套主题
-    // 都定义了 400 / 600 两档），并带字面回落值，旧主题缺令牌时依然可见。
-    '.dsh-hub__chip--jobs .dsh-hub__dot{background:transparent;border:2px solid var(--dsw-static-violet-400,#a78bfa)}',
+    // 「后台任务」用**实心青色点**，形状与其余状态点完全一致（8px 圆、无描边、无动画），
+    // 只在色相上区分：红（报错）→ 黄（等待回答）→ 绿（待查看）→ 蓝（运行中）→ 灰（未开始）
+    // → 青（后台任务）。青刻意取蓝与绿之间的色相（hsl(173,80%,40%)），读起来就是
+    // 「比运行中更靠后、比待查看更冷」的一档。
+    // 主题静态词表只有 amber / blue / deepseek / green / neutral / red / violet 七个家族，
+    // 没有青色令牌，所以这里直接写字面值，并留成 var() 形式：将来主题若补上
+    // --dsw-static-teal-500 会自动接管，两套主题都不必再改这一行。
+    '.dsh-hub__chip--jobs .dsh-hub__dot{background:var(--dsw-static-teal-500,#14b8a6)}',
     '.dsh-hub__title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.dsh-hub__state{flex:none;font-size:10px;line-height:1;color:var(--dsw-alias-label-secondary)}',
     '.dsh-hub__more{flex:none;display:inline-flex;align-items:center;height:26px;padding:0 9px;border:1px dashed var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;line-height:1;cursor:pointer;white-space:nowrap}',

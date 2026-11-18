@@ -317,7 +317,7 @@ test('/jobs 动作：回传聚合回调的结果，回调缺失或抛错时说�
     sessions: [{ sessionId: 's1', jobs: [{ id: 'b1', label: 'npm run watch', status: 'running' }] }],
   })), 'POST', `${ROUTE_PATH}/jobs`)
   assert.equal(ok.status, 200)
-  // 成功必须带 ok: true —— 客户端解析只认这个字段（0.5.0 曾漏掉，紫圈永远不出现）。
+  // 成功必须带 ok: true —— 客户端解析只认这个字段（0.5.0 曾漏掉，青点永远不出现）。
   assert.equal(ok.body.ok, true)
   assert.equal(ok.body.sessions[0].sessionId, 's1')
   assert.equal(ok.body.sessions[0].jobs[0].label, 'npm run watch')
@@ -411,7 +411,7 @@ test('collectRunningJobs：只收「运行中 + 本会话拥有」的任务，la
 test('两半契约：宿主半 /jobs 的真实应答必须能被客户端半的真实解析器吃下', async () => {
   // 0.5.0 的教训：路由回 `{ sessions: [...] }` 而客户端解析要求 `ok === true`，
   // 两半各测各的都绿（e2e 的 fetch 桩用的是「理想形状」），合起来却是断的——
-  // 紫圈永远不出现。这个用例把「宿主半路由的真实应答」直接喂给「客户端半的真实
+  // 青点永远不出现。这个用例把「宿主半路由的真实应答」直接喂给「客户端半的真实
   // 解析器」（src/hub-host.js 按构建脚本同样的方式内联加载），契约再漂移就在这里红。
   const here = dirname(fileURLToPath(import.meta.url))
   const hostSource = readFileSync(join(here, '..', 'src', 'hub-host.js'), 'utf8')

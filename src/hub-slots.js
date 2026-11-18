@@ -66,8 +66,8 @@ export function registerHubSlots({ ctx, pluginId, deps }) {
         //
         // 曾经这里是白名单（`{ openSession, ackError, acks, unread, drafts, history, … }`），
         // 好处是契约一眼可见，坏处是**新增一个依赖忘了登记就会静默退化**：0.5.x 给组件加了
-        // `deps.jobs`（后台任务紫圈），白名单没跟上，组件拿到的 `jobs` 恒为 undefined，
-        // 于是宿主半聚合、客户端轮询、解析全都正常，界面上却永远不出现紫圈——而且不报错。
+        // `deps.jobs`（后台任务青点），白名单没跟上，组件拿到的 `jobs` 恒为 undefined，
+        // 于是宿主半聚合、客户端轮询、解析全都正常，界面上却永远不出现青点——而且不报错。
         // 组件的每个依赖本身都有缺省回落（见 hub-ui 的 EMPTY_*_STORE），所以漏传不会崩，
         // 只会安静地少一块功能，正是最难查的那种。
         // 透传之后，新增依赖只需要在 client-main 里接一次，不存在第二处登记点。

@@ -6,9 +6,9 @@
 给 DeepSeek Harness 补一个「所有对话现在怎么样了」的统一视图：
 
 - **软件顶端标题栏的状态栏**：按颜色顺序 `红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）
-  > 灰（未开始）> 紫（后台任务）` 排列当前需要关注的对话，点一下直接跳到该对话；
+  > 灰（未开始）> 青（后台任务）` 排列当前需要关注的对话，点一下直接跳到该对话；
   输入框里有未发送草稿的会话会以灰色「未开始」出现；对话已结束但后台任务还在跑的
-  （`run_in_background` 等）会以紫色空心圈「后台任务」兜底出现；
+  （`run_in_background` 等）会以青色圆点「后台任务」兜底出现；
 - **Windows 通知**：对话状态发生变化（完成 / 失败 / 需要你回答）时弹系统通知，
   点击通知跳回对应对话并尽量把 DSH 窗口提到前台；
 - **任务栏状态点**：用 `ITaskbarList3.SetOverlayIcon` 在任务栏的 DSH 图标上画
@@ -24,7 +24,7 @@
 **A：装 `dsh-session-status-hub`。** 它做三件事：
 
 1. **标题栏状态栏**：按 `红（报错）> 黄（等待回答）> 绿（待查看）> 蓝（运行中）
-   > 灰（未开始）> 紫（后台任务）` 排序，
+   > 灰（未开始）> 青（后台任务）` 排序，
    默认只显示最需要你的 3 条，点一下直接跳到该对话；输入框里打了字但还没发送的会话会以灰色
    「未开始」出现。这一组叫「状态会话」，后面还跟一组「最近会话」（状态消失后按更新时间最多
    取 5 个、默认 3 条 + `+N`），用来一键回到刚才那个对话；**最左端还有 `‹` `›` 两个按钮**，
@@ -54,9 +54,9 @@
 | **待查看** `unread` | `sessionStatus.completionUnread === true`（原生「未读完成」绿点）**或**本插件补记的「后台完成」 | 🟢 绿点 + 「待查看」 | 绿（无红/黄时） |
 | **运行中** `running` | `sessionStatus.running` 或会话行 `running` | 🔵 蓝点 + 「运行中」 | **不点灯** |
 | **未开始** `draft` | `localStorage["dsh.conversation.<sessionId>"].draft.text` 去空白后非空；当前主视图会话还读 `uiSession.current.hooks.input.draft`（ui-conversation 的实时输入草稿） | ⚪ 灰点 + 「未开始」 | **不点灯** |
-| **后台任务** `jobs` | 宿主半聚合的「该会话仍有状态为 running / stopping 的后台任务」（`POST /dsh-session-status-hub/jobs` 的轮询快照） | 🟣 空心紫圈 + 「后台任务 ×N」 | **不点灯** |
+| **后台任务** `jobs` | 宿主半聚合的「该会话仍有状态为 running / stopping 的后台任务」（`POST /dsh-session-status-hub/jobs` 的轮询快照） | 🔵 青点 + 「后台任务 ×N」 | **不点灯** |
 
-- **状态栏 chip 的显示顺序 = 颜色顺序：红 > 黄 > 绿 > 蓝 > 灰 > 紫**（`STATE_ORDER`），同一类里更新时间新的靠前。
+- **状态栏 chip 的显示顺序 = 颜色顺序：红 > 黄 > 绿 > 蓝 > 灰 > 青**（`STATE_ORDER`），同一类里更新时间新的靠前。
   最需要你介入的排最前，「后台任务」排在最后：它只是「还有活儿在后台跑」的提醒，
   任何回合级状态（含未开始草稿）都比它更需要位置。如果前面几类已经占满默认 3 条，
   后台任务会收在 `+N` 里，点开即可看到。
@@ -92,7 +92,7 @@
 
 > **运行中不点灯**。正在跑是常态，不需要你介入；如果运行中也点亮任务栏，绿灯几乎
 > 常亮，真正的红/黄提示反而被盖住。运行中仍然出现在状态栏 chip 里（蓝色脉冲点）。
-> 「后台任务」同理：紫圈只出现在状态栏，不点灯。
+> 「后台任务」同理：青点只出现在状态栏，不点灯。
 
 ---
 
@@ -217,7 +217,7 @@ DSH 的后台任务（`run_in_background` 的 shell 命令等）注册在**宿�
   回合结束后它立刻变 `false`，哪怕后台任务还挂着。两者语义不同，不能互相替代。
 - **为什么走宿主半聚合而不走投影**：任务的 `job/registered` / `job/settled` 事件虽然写进
   会话日志，但**宿主崩溃后没有合成收尾**（turn 有 `interrupted`，任务没有）——投影会把
-  崩溃前「registered 且未 settled」的任务永远记成运行中，重启后状态栏就躺着一枚假紫圈。
+  崩溃前「registered 且未 settled」的任务永远记成运行中，重启后状态栏就躺着一枚假青点。
   进程内注册表没有这个问题：宿主重启时它随 teardown 一并取消、清空，读到的永远是真相。
 - **数据通路**：客户端每 5 秒 `POST /dsh-session-status-hub/jobs`，宿主半遍历**在挂会话**，
   对每个会话读一次 `jobs.list(sessionId)`，过滤 `status ∈ running / stopping` 且
@@ -228,7 +228,7 @@ DSH 的后台任务（`run_in_background` 的 shell 命令等）注册在**宿�
   （那是会话头任务列表的方案）。5 秒的轮询周期对「状态栏提醒」粒度绰绰有余。
 - **降级**：宿主半是旧构建（路由返回 `unknown-action`）时，客户端**锁定降级**——不再请求，
   「后台任务」状态静默消失，其余五类状态、通知与任务栏完全不受影响；重启 DSH 对齐版本后
-  自动恢复。普通网络失败只算「这次没拿到」，保留上一份快照（紫圈不闪没），下一轮照常再试。
+  自动恢复。普通网络失败只算「这次没拿到」，保留上一份快照（青点不闪没），下一轮照常再试。
 - **隐私边界**：任务标签（label）是 agent 自己起的命令行，状态栏只显示**第一个任务**的
   标签与任务数（`×N`），悬停提示同源；任务输出一个字节都不进入插件状态。
 
@@ -450,7 +450,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-slots.js         四处插槽注册（含插件详情页设置区块）
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    211 个用例（node:test，零依赖）
+├── test/                    212 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -562,7 +562,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 211 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 212 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
@@ -648,8 +648,8 @@ Invoke-RestMethod -Uri "$base/dsh-session-status-hub/debug" -Method POST -Header
 15. 打开「插件」→ 本插件详情页 → 设置区块里取消勾选「显示『最近会话』组」：状态栏第二组立刻消失、
     第一组与 ‹ › 按钮不变；刷新页面（Ctrl+R）后仍然不显示；重新勾选后回来。
 16. 在 A 会话里发一个带 `run_in_background` 的长任务，等 agent 交差（回合完成）→ 状态栏出现
-    紫色空心圈「后台任务」，任务栏不点灯、不弹额外通知；悬停 chip 能看到命令标签；
-    多个任务时显示 `×N`。任务结束后（下一轮轮询，最多 5 秒）紫圈消失。
+    青色圆点「后台任务」，任务栏不点灯、不弹额外通知；悬停 chip 能看到命令标签；
+    多个任务时显示 `×N`。任务结束后（下一轮轮询，最多 5 秒）青点消失。
     控制台 `__DSH_SESSION_HUB__.getRunningJobs()` 只应看到 `{ count, label }`，
     不应出现任务输出；`__DSH_SESSION_HUB__.inspect().jobsRoute` 应为 `supported`。
 

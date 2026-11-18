@@ -1561,7 +1561,7 @@ test('显示设置：默认显示「最近会话」，setConfig 关掉后快照�
   }
 })
 
-// ---- 后台任务（状态栏第六类「jobs」：紫圈，轮询宿主半 /jobs）----
+// ---- 后台任务（状态栏第六类「jobs」：青点，轮询宿主半 /jobs）----
 
 /**
  * 造一个会响应 /jobs 的 onFetch 桩。
@@ -1595,7 +1595,7 @@ test('后台任务：回合结束后仍在跑的任务显示为「后台任务�
       s1: { count: 1, label: 'npm run watch' },
       s2: { count: 1, label: 'build' },
     })
-    // s1：回合已完成（completed）、无更高状态 → 「后台任务」紫圈兜底。
+    // s1：回合已完成（completed）、无更高状态 → 「后台任务」青点兜底。
     // s2：正在主视图且空白 → 与草稿同一条规则，没有其他状态时也落到「后台任务」。
     const rows = api.getRows()
     assert.deepEqual(rows.map((item) => [item.id, item.state, item.jobCount, item.jobLabel]), [
@@ -1621,7 +1621,7 @@ test('后台任务：回合结束后仍在跑的任务显示为「后台任务�
   }
 })
 
-test('后台任务：等待回答 / 运行中等既有状态全部优先，紫圈只兜底空状态会话', async () => {
+test('后台任务：等待回答 / 运行中等既有状态全部优先，青点只兜底空状态会话', async () => {
   const harness = await createHarness({
     sessions: [
       sessionRow('ans'),
@@ -1676,13 +1676,13 @@ test('后台任务：拉取失败保留上一份快照，拿到空列表才清�
     assert.deepEqual(api.getRunningJobs(), { s1: { count: 1, label: 'npm test' } })
     assert.equal(api.getRows().some((row) => row.state === 'jobs'), true)
 
-    // 网络失败：紫圈保持，不让一次抖动把状态闪没。
+    // 网络失败：青点保持，不让一次抖动把状态闪没。
     mode.value = 'fail'
     assert.deepEqual(await api.refreshJobs(), { s1: { count: 1, label: 'npm test' } })
     await settle()
     assert.equal(api.getRows().some((row) => row.state === 'jobs'), true)
 
-    // 明确的空列表：任务都结束了，紫圈熄灭（行要等下一次观察刷新，settle 等 30ms 合并窗口）。
+    // 明确的空列表：任务都结束了，青点熄灭（行要等下一次观察刷新，settle 等 30ms 合并窗口）。
     mode.value = 'empty'
     assert.deepEqual(await api.refreshJobs(), {})
     await settle()

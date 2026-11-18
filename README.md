@@ -6,10 +6,10 @@
 A missing "how are all my Sessions doing right now?" surface for [DeepSeek Harness](https://github.com/deepseek-ai):
 
 - **A rail in the top title bar** listing the Sessions that need you, ordered by
-  `red (failed) > yellow (waiting for your answer) > green (unread) > blue (running) > gray (not started) > purple (background jobs)`.
+  `red (failed) > yellow (waiting for your answer) > green (unread) > blue (running) > gray (not started) > teal (background jobs)`.
   A Session with an unsent draft in its composer shows up as a gray "Not started" chip; one whose
   turn has ended while its background jobs (`run_in_background` etc.) still run shows up as a
-  purple hollow "Jobs" chip.
+  teal "Jobs" dot.
   One click jumps straight to that Session. A second group — **Recent Sessions**, up to 5 of
   the most recently updated Sessions outside the status group (3 visible + `+N`) — sits right
   after it as a way back to the conversation you just left.
@@ -33,7 +33,7 @@ is waiting for my answer?**
 **A: install `dsh-session-status-hub`.** It does three things:
 
 1. **A rail in the title bar**, ordered
-   `red (failed) > yellow (waiting for you) > green (unread) > blue (running) > gray (not started) > purple (background jobs)`.
+   `red (failed) > yellow (waiting for you) > green (unread) > blue (running) > gray (not started) > teal (background jobs)`.
    The 3 chips shown by default are always the 3 that need you most; one click jumps to that
    Session. A Session whose composer holds an unsent draft appears as a gray "Not started" chip.
    That group is labelled **Status Sessions**; a second group after it — **Recent Sessions**
@@ -53,7 +53,7 @@ What it deliberately does *not* do:
 - no notifications for streaming activity ("thinking…", "running a tool…") — only real state
   changes;
 - **running never lights the taskbar**: a permanently green dot would mask the red / yellow
-  signal; background jobs never light it either — the purple chip stays rail-only;
+  signal; background jobs never light it either — the teal chip stays rail-only;
 - it fills the stock gap where the conversation you are *looking at* finishes in the
   background (the stock UI marks nothing) — the plugin records it itself and shows green;
 - **zero npm dependencies**; the host half hot-loads, the client half needs one `Ctrl+R`.
@@ -75,7 +75,7 @@ What it deliberately does *not* do:
 | **unread** `unread` | `completionUnread === true`, or the plugin's own "finished in background" record | 🟢 + 待查看 | green |
 | **running** `running` | `sessionStatus.running`, or the Session row's `running` | 🔵 + 运行中 | **no dot** |
 | **not started** `draft` | non-blank `draft.text` in `localStorage["dsh.conversation.<sessionId>"]`; the current main-view Session also reads `uiSession.current.hooks.input.draft` (ui-conversation's live composer draft) | ⚪ + 未开始 | **no dot** |
-| **background jobs** `jobs` | the host-side aggregation still reports `running` / `stopping` jobs owned by that Session (`POST /dsh-session-status-hub/jobs`, polled every 5 s) | 🟣 hollow ring + 后台任务 ×N | **no dot** |
+| **background jobs** `jobs` | the host-side aggregation still reports `running` / `stopping` jobs owned by that Session (`POST /dsh-session-status-hub/jobs`, polled every 5 s) | 🔵 teal dot + 后台任务 ×N | **no dot** |
 
 > "Background jobs" is the only polled state (the other five are event-driven): a session's
 > turn may have completed while its `run_in_background` jobs keep running. It classifies last
@@ -84,8 +84,8 @@ What it deliberately does *not* do:
 > `/jobs` action, the client locks the fallback off and the state disappears silently until
 > DSH is restarted into a matching version.
 
-- Chip order is the colour order (red > yellow > green > blue > gray > purple); within a
-  state, most recently updated first. Gray and purple sit last on purpose: "not started" and
+- Chip order is the colour order (red > yellow > green > blue > gray > teal); within a
+  state, most recently updated first. Gray and teal sit last on purpose: "not started" and
   "background jobs" are only reminders and must not take a top-3 slot away from failed /
   waiting / unread / running Sessions. When higher states fill the three default slots, drafts
   and job chips stay behind the `+N` expander.
@@ -271,7 +271,7 @@ state facts ("this turn finished and you haven't looked"), not interruptions.
 ## Diagnostics
 
 ```powershell
-npm run check     # 1) lib/client.js matches src/  2) 211 test cases
+npm run check     # 1) lib/client.js matches src/  2) 212 test cases
 ```
 
 ```js
@@ -326,7 +326,7 @@ dsh-session-status-hub/
 ├── src/hub-slots.js         slot registration
 ├── src/client-main.js       wiring: services → model → notifications / rail / taskbar
 ├── build/bundle.mjs         inlines src/ in order into one classic-script bundle
-├── test/                    211 node:test cases, zero dependencies
+├── test/                    212 node:test cases, zero dependencies
 ├── locale/{zh,en}.json      plugin manager title and description
 ├── icon.svg                 plugin icon
 ├── cordis.patch.yml         bundle patch inserting the session-hub row

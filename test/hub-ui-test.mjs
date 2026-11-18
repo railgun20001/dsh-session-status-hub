@@ -173,7 +173,7 @@ function loadSettingsFactory() {
  * 按 bundle 的顺序把 hub-ui 与 hub-slots 拼进同一个作用域，加载 `registerHubSlots`。
  *
  * 这是**接线层**测试用的加载器：只有真的走一遍「registerHubSlots 注册 → 插槽组件被渲染」，
- * 才能抓住「组件新增了一个依赖、插槽却忘了传」这类缝隙（0.5.x 的 jobs 紫圈就是这么丢的）。
+ * 才能抓住「组件新增了一个依赖、插槽却忘了传」这类缝隙（0.5.x 的 jobs 青点就是这么丢的）。
  * @param {object} ReactStub React 桩（hub-slots 里的 `require('react')` 会返回它）。
  * @returns {{ registerHubSlots: Function }} 插槽注册函数。
  */
@@ -975,9 +975,9 @@ test('详情页设置区块：默认勾选，取消勾选写入 showRecentSessio
   assert.equal(readonlyBox.props.disabled, true)
 })
 
-// ---- 后台任务紫圈：渲染 + 接线（0.5.x 的漏接就发生在这两处之间）----
+// ---- 后台任务青点：渲染 + 接线（0.5.x 的漏接就发生在这两处之间）----
 
-test('后台任务：渲染成紫色空心圈 chip，带 ×N 与命令标签提示', () => {
+test('后台任务：渲染成青色实心点 chip，带 ×N 与命令标签提示', () => {
   const Rail = loadFactory()(reactStub(), {
     openSession: () => {},
     ackError: () => {},
@@ -1017,10 +1017,54 @@ test('后台任务：渲染成紫色空心圈 chip，带 ×N 与命令标签提�
   assert.doesNotMatch(titlesOf([singleChip])[0], /×1/)
 })
 
+test('后台任务的点：实心青绿圆点，形状与其余状态点同款（不描边、不透明、不动画）', () => {
+  // 直接对 CSS 文本下断言：这是唯一能钉住「长什么样」的地方，而图形样式恰恰最容易
+  // 悄悄退化（0.5.x 期间它曾是空心紫圈，后来还漏接过一次数据源）。
+  const cssLine = SOURCE.split('\n').find((line) => line.includes('.dsh-hub__chip--jobs .dsh-hub__dot'))
+  assert.ok(cssLine !== undefined, '必须有一条 jobs 状态点的样式规则')
+
+  // 实心：用 background 上色，不许再把 background 设成 transparent。
+  assert.match(cssLine, /background:(?!transparent)/, 'jobs 的点必须是实心（background 上色）')
+  assert.doesNotMatch(cssLine, /transparent/, '不许再画成空心圈')
+  // 不描边：空心圈靠 border 撑形状，实心点不该有它。
+  assert.doesNotMatch(cssLine, /border(?!-radius)/, '形制要与其他状态点一致，不额外描边')
+  // 不动画：只有「运行中」才脉冲，其余状态点都是静的。
+  assert.doesNotMatch(cssLine, /animation/, 'jobs 的点不该有动画')
+
+  // 颜色落在蓝与绿之间（青绿）：色相 160°–195°，且带字面回落值，
+  // 主题没有该令牌时也能显示。
+  const hex = /#([0-9a-fA-F]{6})/.exec(cssLine)
+  assert.ok(hex !== null, '样式里应当有一个字面颜色回落值')
+  const r = parseInt(hex[1].slice(0, 2), 16) / 255
+  const g = parseInt(hex[1].slice(2, 4), 16) / 255
+  const b = parseInt(hex[1].slice(4, 6), 16) / 255
+  const max = Math.max(r, g, b)
+  const min = Math.min(r, g, b)
+  const delta = max - min
+  let hue = 0
+  if (delta !== 0) {
+    // 标准 HSL 色相公式：以「最大分量」决定扇区，分母是 delta。
+    if (max === r) hue = 60 * (((g - b) / delta) % 6)
+    else if (max === g) hue = 60 * (((b - r) / delta) + 2)
+    else hue = 60 * (((r - g) / delta) + 4)
+  }
+  if (hue < 0) hue += 360
+  assert.ok(hue >= 160 && hue <= 195, `色相应落在蓝绿之间（青绿），实际 ${hue.toFixed(1)}°`)
+  // 绿分量必须不低于蓝与红：青绿而不是偏蓝的靛。
+  assert.ok(g >= b && g > r, '青绿应当以绿分量为主要成分')
+
+  // 对照：其余状态点也必须仍是实心背景色（形状一致这条要求的另一半）。
+  for (const modifier of ['answer', 'error', 'running', 'unread', 'draft']) {
+    const line = SOURCE.split('\n').find((item) => item.includes(`.dsh-hub__chip--${modifier} .dsh-hub__dot`))
+    assert.ok(line !== undefined, `${modifier} 应当有自己的点样式`)
+    assert.doesNotMatch(line, /background:transparent/, `${modifier} 不该是空心`)
+  }
+})
+
 test('接线：registerHubSlots 交给状态栏的依赖覆盖组件读取的全部字段', () => {
   // 这条用例针对的正是 0.5.x 的真实故障：组件早就开始读 `deps.jobs`，但插槽注册那边
   // 用的是逐项白名单，忘了加 `jobs`，于是组件拿到 undefined、退化成空表，
-  // 宿主半聚合、客户端轮询、诊断入口全都正常，**界面上就是不出现紫圈**。
+  // 宿主半聚合、客户端轮询、诊断入口全都正常，**界面上就是不出现青点**。
   // 这里走一遍真实注册路径（registerHubSlots → 插槽组件 → 渲染），漏接就会红。
   const { registerHubSlots } = loadSlotsFactory(reactStub())
   const registered = new Map()

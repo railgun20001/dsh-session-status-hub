@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session Status Hub",
-    "description": "A top-titlebar rail (after the App / Edit menus) listing running, waiting-for-answer, unread, failed, not-started and background-jobs Sessions (a purple hollow ring marks a conversation whose turn ended while its run_in_background jobs still run), followed by a Recent Sessions group for jumping back to the conversation you just left, plus back / forward buttons at its left end that walk the Session visit history. An unsent draft shows as a gray \"Not started\" chip. State changes raise Windows notifications and mark the taskbar icon red, yellow or green."
+    "description": "A top-titlebar rail (after the App / Edit menus) listing running, waiting-for-answer, unread, failed, not-started and background-jobs Sessions (a teal dot marks a conversation whose turn ended while its run_in_background jobs still run), followed by a Recent Sessions group for jumping back to the conversation you just left, plus back / forward buttons at its left end that walk the Session visit history. An unsent draft shows as a gray \"Not started\" chip. State changes raise Windows notifications and mark the taskbar icon red, yellow or green."
   }
 }
