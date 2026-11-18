@@ -170,6 +170,34 @@ function loadSettingsFactory() {
 }
 
 /**
+ * 按 bundle 的顺序把 hub-ui 与 hub-slots 拼进同一个作用域，加载 `registerHubSlots`。
+ *
+ * 这是**接线层**测试用的加载器：只有真的走一遍「registerHubSlots 注册 → 插槽组件被渲染」，
+ * 才能抓住「组件新增了一个依赖、插槽却忘了传」这类缝隙（0.5.x 的 jobs 紫圈就是这么丢的）。
+ * @param {object} ReactStub React 桩（hub-slots 里的 `require('react')` 会返回它）。
+ * @returns {{ registerHubSlots: Function }} 插槽注册函数。
+ */
+function loadSlotsFactory(ReactStub) {
+  const slotsSource = readFileSync(join(HERE, '..', 'src', 'hub-slots.js'), 'utf8')
+    // 与 build/bundle.mjs 的内联规则一致：剥掉 export 前缀（bundle 里它们同处一个作用域）。
+    .replace(/^export\s+/gm, '')
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    'require', 'deriveHubRows', 'deriveRecentRows', 'wheelScrollDelta', 'STATE_LABELS', 'HUB_STRINGS',
+    `${SOURCE}\n${slotsSource}\nreturn { registerHubSlots, createSessionHubRail }`,
+  )(() => ReactStub, deriveHubRows, deriveRecentRows, wheelScrollDelta, STATE_LABELS, HUB_STRINGS)
+}
+
+/**
+ * 造一个快照仓库桩。
+ * @param {object} value 快照值。
+ * @returns {{ subscribe: () => () => void, getSnapshot: () => object }} 仓库。
+ */
+function storeOf(value) {
+  return { subscribe: () => () => {}, getSnapshot: () => value }
+}
+
+/**
  * 找到第一个满足条件的节点。
  * @param {object} node 根节点。
  * @param {(node: object) => boolean} predicate 条件。
@@ -945,4 +973,108 @@ test('详情页设置区块：默认勾选，取消勾选写入 showRecentSessio
   })
   const readonlyBox = findNode(ReadOnly({}), (node) => node.props?.['data-dsh-hub-setting'] === 'recent-sessions')
   assert.equal(readonlyBox.props.disabled, true)
+})
+
+// ---- 后台任务紫圈：渲染 + 接线（0.5.x 的漏接就发生在这两处之间）----
+
+test('后台任务：渲染成紫色空心圈 chip，带 ×N 与命令标签提示', () => {
+  const Rail = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: storeOf({}),
+    // 宿主半 /jobs 轮询快照的实际形状。
+    jobs: storeOf({ s1: { count: 3, label: 'npm run watch' } }),
+  })
+  const list = {
+    byId: { s1: row('s1') },
+    // 回合已完成：没有更高优先级的状态，应当落到「后台任务」兜底。
+    projectionsBySession: { s1: { values: { hubTurnOutcome: { outcome: 'completed', seq: 2, turn: 1, time: 1, code: null, message: null } } } },
+  }
+  const tree = Rail({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const jobsChips = chipsOf(tree, 'dsh-hub__chip--jobs')
+  assert.equal(jobsChips.length, 1, '应当渲染一个「后台任务」chip')
+  // 任务数 > 1 时显示 ×N；悬停提示带上首个任务标签。
+  assert.match(titlesOf(jobsChips)[0], /后台任务/)
+  assert.match(titlesOf(jobsChips)[0], /×3/)
+  assert.match(String(jobsChips[0].props.title), /npm run watch/)
+
+  // 只有一个任务时不显示 ×1（避免噪音）。
+  const Single = loadFactory()(reactStub(), {
+    openSession: () => {},
+    ackError: () => {},
+    acks: storeOf({}),
+    jobs: storeOf({ s1: { count: 1, label: 'build' } }),
+  })
+  const singleTree = Single({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const singleChip = chipsOf(singleTree, 'dsh-hub__chip--jobs')[0]
+  assert.match(titlesOf([singleChip])[0], /后台任务/)
+  assert.doesNotMatch(titlesOf([singleChip])[0], /×1/)
+})
+
+test('接线：registerHubSlots 交给状态栏的依赖覆盖组件读取的全部字段', () => {
+  // 这条用例针对的正是 0.5.x 的真实故障：组件早就开始读 `deps.jobs`，但插槽注册那边
+  // 用的是逐项白名单，忘了加 `jobs`，于是组件拿到 undefined、退化成空表，
+  // 宿主半聚合、客户端轮询、诊断入口全都正常，**界面上就是不出现紫圈**。
+  // 这里走一遍真实注册路径（registerHubSlots → 插槽组件 → 渲染），漏接就会红。
+  const { registerHubSlots } = loadSlotsFactory(reactStub())
+  const registered = new Map()
+  const scoped = {
+    effect: (callback) => { callback(); return () => {} },
+    locale: { register: () => () => {} },
+    slots: {
+      inject: (_name, callback) => callback(),
+      register: (options, Component) => {
+        registered.set(options.name, Component)
+        return () => {}
+      },
+    },
+  }
+  const ctx = { inject: (_deps, callback) => callback(scoped), logger: { info: () => {} } }
+
+  const opened = []
+  registerHubSlots({
+    ctx,
+    pluginId: 'dsh-session-status-hub',
+    deps: {
+      openSession: (id) => opened.push(id),
+      ackError: () => {},
+      acks: storeOf({}),
+      // 注意键名：注入侧叫 localUnread，组件读 unread（插槽负责改名）。
+      localUnread: storeOf({ s2: 5 }),
+      drafts: storeOf({}),
+      jobs: storeOf({ s1: { count: 2, label: 'npm run watch' } }),
+      history: storeOf({ entries: [], index: -1, canBack: false, canForward: false }),
+      goBack: () => false,
+      goForward: () => false,
+      settings: storeOf({ showRecentSessions: true }),
+      setShowRecentSessions: () => {},
+    },
+  })
+
+  const Rail = registered.get('shell.overlay')
+  assert.ok(typeof Rail === 'function', '状态栏应当注册到 shell.overlay')
+
+  const list = {
+    byId: { s1: row('s1'), s2: row('s2') },
+    projectionsBySession: {
+      s1: { values: { hubTurnOutcome: { outcome: 'completed', seq: 2, turn: 1, time: 1, code: null, message: null } } },
+      s2: { values: { hubTurnOutcome: { outcome: 'completed', seq: 3, turn: 1, time: 1, code: null, message: null } } },
+    },
+  }
+  const tree = Rail({
+    useSessions: (selector) => selector(list),
+    useSessionStatus: (selector) => selector(new Map()),
+  })
+  const text = collectText(tree).join('|')
+  // 关键断言：后台任务依赖真的到得了组件（这条一旦失败就是接线又漏了）。
+  assert.match(text, /后台任务/, 'jobs 依赖必须从插槽注册处传到状态栏组件')
+  assert.match(text, /×2/, '任务数应当来自真实的 jobs 快照')
+  // 回归保护：`localUnread → unread` 的改名不能丢，否则「待查看」会静默消失。
+  assert.match(text, /待查看/, 'unread 的改名映射必须保留')
 })

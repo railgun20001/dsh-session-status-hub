@@ -450,7 +450,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-slots.js         四处插槽注册（含插件详情页设置区块）
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    209 个用例（node:test，零依赖）
+├── test/                    211 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -562,7 +562,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 209 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 211 个用例
 ```
 
 DSH 窗口 DevTools 控制台：
