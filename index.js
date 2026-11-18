@@ -283,8 +283,12 @@ export function createRouteHandler(raiser, diagnostics, runningJobs) {
         return
       }
       // 回调缺失（jobs / sessions 服务不在）与「聚合成功但没有任务」是两回事：
-      // 前者明确告诉客户端「这次没有可信数据」，后者给空列表。
-      respond(res, 200, body ?? { ok: false, reason: 'jobs-unavailable' })
+      // 前者明确告诉客户端「这次没有可信数据」，后者给 ok + 空列表。
+      // 注意：**成功必须带 `ok: true`**——客户端的解析只认这个字段（见 hub-host 的
+      // fetchRunningJobs），0.5.0 曾在这里漏掉它，导致紫圈永远不出现。
+      respond(res, 200, body === undefined || !Array.isArray(body?.sessions)
+        ? { ok: false, reason: 'jobs-unavailable' }
+        : { ok: true, sessions: body.sessions })
       return
     }
     req.resume?.()

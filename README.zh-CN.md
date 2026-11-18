@@ -221,7 +221,8 @@ DSH 的后台任务（`run_in_background` 的 shell 命令等）注册在**宿�
   进程内注册表没有这个问题：宿主重启时它随 teardown 一并取消、清空，读到的永远是真相。
 - **数据通路**：客户端每 5 秒 `POST /dsh-session-status-hub/jobs`，宿主半遍历**在挂会话**，
   对每个会话读一次 `jobs.list(sessionId)`，过滤 `status ∈ running / stopping` 且
-  `owner === sessionId` 的任务，回 `{ sessions: [{ sessionId, jobs: [...] }] }`。
+  `owner === sessionId` 的任务，回 `{ ok: true, sessions: [{ sessionId, jobs: [...] }] }`
+  （`ok` 字段是客户端解析的硬契约，缺了它整条数据会被当作「这次没拿到」丢弃）。
   归属判定用注册表自己的所有者围栏；无主任务不属于任何「对话」，跳过。
 - **性能**：单次聚合是「在挂会话数 × 一次内存读」，远低于为每个会话开一条 roster 流
   （那是会话头任务列表的方案）。5 秒的轮询周期对「状态栏提醒」粒度绰绰有余。
@@ -449,7 +450,7 @@ plugins/dsh-session-status-hub/
 │   ├── hub-slots.js         四处插槽注册（含插件详情页设置区块）
 │   └── client-main.js       接线：服务 → 模型 → 通知 / 状态栏 / 任务栏
 ├── build/bundle.mjs         把 src/ 下的源文件按顺序内联成单文件浏览器 bundle（--check 校验）
-├── test/                    208 个用例（node:test，零依赖）
+├── test/                    209 个用例（node:test，零依赖）
 ├── locale/{zh,en}.json      插件管理器的标题与描述
 ├── icon.svg                 插件图标
 ├── cordis.patch.yml         bundle patch：插入 session-hub 行
@@ -561,7 +562,7 @@ __DSH_SESSION_HUB__.setConfig({ silenceAllWhenFocused: true })
 
 ```powershell
 cd path/to/dsh-session-status-hub
-npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 208 个用例
+npm run check      # 1) 校验 lib/client.js 与源码一致  2) 跑 209 个用例
 ```
 
 DSH 窗口 DevTools 控制台：

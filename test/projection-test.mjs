@@ -23,6 +23,7 @@ import {
   ROUTE_PATH,
 } from '../index.js'
 import { resolveTargetProcessId } from '../lib/raise-window.js'
+import { ROUTE_HEADER_VALUE } from '../src/hub-identity.js'
 
 /** 读 package.json 的 version，作为两半版本标识的单一事实来源。 */
 function packageVersion() {
@@ -316,6 +317,8 @@ test('/jobs 动作：回传聚合回调的结果，回调缺失或抛错时说�
     sessions: [{ sessionId: 's1', jobs: [{ id: 'b1', label: 'npm run watch', status: 'running' }] }],
   })), 'POST', `${ROUTE_PATH}/jobs`)
   assert.equal(ok.status, 200)
+  // 成功必须带 ok: true —— 客户端解析只认这个字段（0.5.0 曾漏掉，紫圈永远不出现）。
+  assert.equal(ok.body.ok, true)
   assert.equal(ok.body.sessions[0].sessionId, 's1')
   assert.equal(ok.body.sessions[0].jobs[0].label, 'npm run watch')
 
@@ -403,4 +406,68 @@ test('collectRunningJobs：只收「运行中 + 本会话拥有」的任务，la
   assert.equal(partial.body.sessions[0].jobs[0].label, 's2 job')
 
   for (const dispose of disposers.splice(0)) dispose()
+})
+
+test('两半契约：宿主半 /jobs 的真实应答必须能被客户端半的真实解析器吃下', async () => {
+  // 0.5.0 的教训：路由回 `{ sessions: [...] }` 而客户端解析要求 `ok === true`，
+  // 两半各测各的都绿（e2e 的 fetch 桩用的是「理想形状」），合起来却是断的——
+  // 紫圈永远不出现。这个用例把「宿主半路由的真实应答」直接喂给「客户端半的真实
+  // 解析器」（src/hub-host.js 按构建脚本同样的方式内联加载），契约再漂移就在这里红。
+  const here = dirname(fileURLToPath(import.meta.url))
+  const hostSource = readFileSync(join(here, '..', 'src', 'hub-host.js'), 'utf8')
+  const { createHostBridge } = new Function(
+    'ROUTE_HEADER',
+    'ROUTE_HEADER_VALUE',
+    `${hostSource.replace(/^export\s+/gm, '')}\nreturn { createHostBridge }`,
+  )(ROUTE_HEADER, ROUTE_HEADER_VALUE)
+
+  /** 用真实路由应答驱动客户端桥接器；返回 [解析结果, 能力状态]。 */
+  const parseThroughClient = async (routeResponse) => {
+    const bridge = createHostBridge({
+      pluginId: PLUGIN_ID,
+      version: packageVersion(),
+      getConfig: () => ({ raiseWindow: false }),
+      isDesktopShell: () => false,
+      isDisposed: () => false,
+      fetchImpl: () => Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(routeResponse),
+      }),
+    })
+    const jobs = await bridge.fetchRunningJobs()
+    return [jobs, bridge.jobsRouteState()]
+  }
+
+  const raiser = {
+    warmup: () => true,
+    raise: () => true,
+    overlay: () => true,
+    isRunning: () => false,
+    overlayState: () => 'none',
+  }
+
+  // 成功路径：聚合回调 → 路由应答 → 客户端解析出任务表。
+  const ok = callRoute(createRouteHandler(raiser, undefined, () => ({
+    sessions: [
+      { sessionId: 's1', jobs: [{ id: 'b1', label: 'npm run watch', status: 'running' }, { id: 'b2', label: 'build', status: 'stopping' }] },
+      { sessionId: 's2', jobs: [] },
+    ],
+  })), 'POST', `${ROUTE_PATH}/jobs`)
+  const [parsed, capability] = await parseThroughClient(ok.body)
+  assert.deepEqual(parsed, { s1: { count: 2, label: 'npm run watch' } })
+  assert.equal(capability, 'supported')
+
+  // 空聚合（任务都结束了）：明确给 ok + 空 sessions，客户端清空任务表。
+  const empty = callRoute(createRouteHandler(raiser, undefined, () => ({ sessions: [] })),
+    'POST', `${ROUTE_PATH}/jobs`)
+  const [parsedEmpty] = await parseThroughClient(empty.body)
+  assert.deepEqual(parsedEmpty, {})
+
+  // 服务不在（自定义组合）：ok:false 只算「这次没拿到」，不锁死降级。
+  const unavailable = callRoute(createRouteHandler(raiser, undefined, undefined),
+    'POST', `${ROUTE_PATH}/jobs`)
+  const [parsedUnavailable, capabilityUnavailable] = await parseThroughClient(unavailable.body)
+  assert.equal(parsedUnavailable, null)
+  assert.equal(capabilityUnavailable, 'unknown')
 })
