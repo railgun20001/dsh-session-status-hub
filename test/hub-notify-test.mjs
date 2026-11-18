@@ -144,9 +144,12 @@ test('silent 跟随 sound；只有「需要你回应」常驻并自带「打开�
   // 以 click 回到页面（electron#27088），名字和行为拧着。
   h.sink.show(notification({ dedupeKey: 'b', category: 'answer', marker: '🟡' }))
   assert.equal(h.state.created[1].options.requireInteraction, true)
+  // 形状必须是 Web Notifications API 的 { action, title }：渲染进程的构造器按该字典
+  // 逐成员解构，写成 Electron 主进程的 { type, text } 会让 `action` 缺失、构造即抛
+  // TypeError，整条问答通知消失（2026-11-18 实测）。
   assert.deepEqual(
     h.state.created[1].options.actions,
-    [{ type: 'button', text: '打开对话' }],
+    [{ action: 'open-session', title: '打开对话' }],
   )
 
   const quiet = harness()
@@ -154,6 +157,40 @@ test('silent 跟随 sound；只有「需要你回应」常驻并自带「打开�
   globalThis.Notification = fakeNotification(quiet.state)
   quiet.sink.show(notification({ dedupeKey: 'c' }))
   assert.equal(quiet.state.created[0].options.silent, true)
+})
+
+test('带按钮的构造失败先降级重试：去掉 actions 再弹，绝不整条消失', () => {
+  const h = harness()
+  const state = h.state
+  // 模拟 2026-11-18 的现场：动作形状写错（或运行时挑剔）时，带 actions 的构造抛 TypeError。
+  const RealFake = fakeNotification(state)
+  function PickyNotification(title, options) {
+    if (options !== undefined && options.actions !== undefined) {
+      // 还原 Chrome 真实的报错文本，确认不是「静默忽略」而是构造异常。
+      throw new TypeError("Failed to construct 'Notification': Failed to read the 'action' property from 'NotificationAction': Required member is undefined.")
+    }
+    return RealFake.call(this, title, options)
+  }
+  PickyNotification.permission = RealFake.permission
+  PickyNotification.requestPermission = RealFake.requestPermission
+  globalThis.Notification = PickyNotification
+
+  h.sink.show(notification({ dedupeKey: 'answer-1', category: 'answer', marker: '🟡' }))
+  // 第一次构造抛错被降级兜住：仍然弹出了通知，只是不带按钮。
+  assert.equal(state.created.length, 1, '降级重试应当成功弹出一个通知')
+  assert.equal('actions' in state.created[0].options, false)
+  assert.equal(state.created[0].options.requireInteraction, true, '常驻不跟着按钮一起丢')
+  const stages = h.sink.getLog().map((entry) => entry.stage)
+  assert.ok(stages.includes('construct-failed-actions'), '降级原因要留痕：' + stages.join(','))
+
+  // 不带按钮的类别构造失败：没有退路，按真正的 construct-failed 记录。
+  function AlwaysFail(title) { throw new TypeError('nope') }
+  AlwaysFail.permission = 'granted'
+  AlwaysFail.requestPermission = () => Promise.resolve('granted')
+  globalThis.Notification = AlwaysFail
+  h.sink.show(notification({ dedupeKey: 'plain-1' }))
+  assert.equal(state.created.length, 1, '无退路的失败不得再构造')
+  assert.equal(h.sink.getLog().at(-1).stage, 'construct-failed')
 })
 
 test('同一事件在去重窗口内只弹一次，窗口过后可以再弹', () => {

@@ -694,9 +694,12 @@ test('待回答 / 待审批弹「需要你回应」通知：常驻并自带「�
     // Windows 又强制常驻 toast 必须带按钮，所以按钮由插件自己给：
     // 「打开对话」——点它和点正文走同一个 click，都跳回会话。
     assert.equal(harness.state.notifications[0].options.requireInteraction, true)
+    // 渲染进程走 Web Notifications API：动作字典是 { action, title }（action 是激活回传
+    // 的 ID，title 是按钮文字）。写成 Electron 主进程的 { type, text } 会构造即抛
+    // TypeError，整条问答通知消失（2026-11-18 实测，已由降级重试兜底）。
     assert.deepEqual(
       harness.state.notifications[0].options.actions,
-      [{ type: 'button', text: '打开对话' }],
+      [{ action: 'open-session', title: '打开对话' }],
     )
 
     // 同一待交互的后续推送不再重复弹。

@@ -53,13 +53,25 @@ export const MAX_LIVE_TOASTS = 100
 export const NOTIFY_SHOW_TIMEOUT_MS = 2500
 
 /**
- * 「需要你回应」通知上自带按钮的文案。
+ * 「需要你回应」通知上自带按钮的文案与激活 ID。
  *
  * Windows 规定常驻 toast 必须至少带一颗动作按钮（见 `show()` 里的完整来龙去脉）；
- * 这颗按钮由我们显式给出，语义就是它的行为本身：点下去跳回会话。与 `describeNotification`
- * 里的标题一样硬编码中文——桌面端文案尚未做 locale，这里保持同一口径。
+ * 这颗按钮由我们显式给出，语义就是它的行为本身：点下去跳回会话。文案与
+ * `describeNotification` 里的标题一样硬编码中文——桌面端文案尚未做 locale，同一口径。
+ *
+ * ## 走的是 Web Notifications API，不是 Electron 主进程的那套
+ *
+ * 插件在**渲染进程**里弹通知，动作字典是 **Web Notifications API** 的形状：
+ * `{ action, title }` —— `action` 是激活时回传的标识（任意非空字符串，值本身没有语义），
+ * `title` 才是按钮上显示的文字。**不要**写成 Electron **主进程** `Notification` 的
+ * `NotificationAction`（`{ type, text }`，那是 Node 侧结构）：渲染进程的构造器按 Web 字典
+ * 逐成员解构，`action` 缺失会当场抛 TypeError，整条通知直接没了——2026-11-18 实测：
+ * 一批「需要你回应」通知全部停在 `construct-failed`，其余类别因为不带按钮而照常弹。
  */
 export const OPEN_SESSION_ACTION_TEXT = '打开对话'
+
+/** 按钮的激活 ID：只在诊断日志里出现，用于对应「这颗按钮被点了」的回传标识。 */
+export const OPEN_SESSION_ACTION_ID = 'open-session'
 
 /**
  * 把一条通知的身份压成可以安全交给 Windows 的短 `tag`。
@@ -334,21 +346,41 @@ export function createNotifySink({
       // 自动按钮点下去同样以 `click` 回到页面（electron#27088）——名字叫「关闭」、
       // 行为却是「跳回会话还把窗口提到前台」，语义完全拧着（2026-11-17 用户实测）。
       //
-      // 所以按钮由我们自己给：`打开对话`。点它和点正文在 Electron 里走的是同一个
-      // `click`（见下方 onClick），两种点法都 = 跳回会话，语义一致；右上角原生「×」
-      // 仍然只是关掉。Electron 42 起 Windows 通知正式支持 `actions` 按钮并按提供的
-      // text 渲染（官方 release note），DSH 桌面端用 44.x；万一运行时忽略该选项，
-      // 最坏也只是回到「常驻 + 自动关闭按钮」的旧行为，不会更糟。
+      // 所以按钮由我们自己给：`打开对话`。形状必须是 Web Notifications API 的
+      // `{ action, title }`（`action` 是激活回传的 ID，`title` 是按钮文字）——别写成
+      // Electron 主进程的 `{ type, text }`，那个形状在这里构造即抛 TypeError，会让
+      // 整条问答通知消失（2026-11-18 实测）。点按钮和点正文在 Electron 里走的是
+      // 同一个 `click`（见下方 onClick），两种点法都 = 跳回会话，语义一致；右上角
+      // 原生「×」仍然只是关掉。万一运行时忽略 `actions`，最坏也只是回到
+      // 「常驻 + 平台自动补关闭按钮」的旧行为，不会更糟；构造层面抛错则由下面的
+      // 降级重试兜住。
       toastOptions.requireInteraction = true
-      toastOptions.actions = [{ type: 'button', text: OPEN_SESSION_ACTION_TEXT }]
+      toastOptions.actions = [{ action: OPEN_SESSION_ACTION_ID, title: OPEN_SESSION_ACTION_TEXT }]
     }
     let toast
     try {
       toast = new Notification(shownTitle, toastOptions)
     } catch (error) {
-      record({ ...base, tag, stage: 'construct-failed', detail: String(error) })
-      console.warn(`[${pluginId}] 创建通知失败`, error)
-      return
+      // 不带按钮的构造失败：没有任何退路，按真正的构造失败记录。
+      if (toastOptions.actions === undefined) {
+        record({ ...base, tag, stage: 'construct-failed', detail: String(error) })
+        console.warn(`[${pluginId}] 创建通知失败`, error)
+        return
+      }
+      // 带按钮的构造失败：**先降级重试**。按钮是锦上添花，常驻横幅才是这则通知的本体，
+      // 绝不能因为一颗按钮（或某个运行时对 `actions` 的挑剔解构）让整条「需要你回应」
+      // 消失——2026-11-18 的教训正是如此，四十多分钟里所有 answer 通知都停在
+      // `construct-failed`。降级 = 去掉 `actions` 再构造一次，`requireInteraction`
+      // 保留；最坏回到「平台自动补关闭按钮」的旧行为。
+      record({ ...base, tag, stage: 'construct-failed-actions', detail: String(error) })
+      try {
+        const { actions: droppedActions, ...withoutActions } = toastOptions
+        toast = new Notification(shownTitle, withoutActions)
+      } catch (retryError) {
+        record({ ...base, tag, stage: 'construct-failed', detail: String(retryError) })
+        console.warn(`[${pluginId}] 创建通知失败（含降级重试）`, retryError)
+        return
+      }
     }
 
     // 登记这条通知：用户打开会话 / 回应待交互时要靠这里的引用把它从系统里撤掉。
@@ -496,7 +528,9 @@ export function createNotifySink({
      * Electron 派发 `failed`、HTML5 叫 `error`，两个事件名都挂）/ `no-event`（2.5 秒内
      * 什么回执都没来，**只是未确认，可能已显示**）/ `permission`（权限不是 granted，
      * 根本没发）/ `deduped`（别的标签页已弹）/ `construct-failed`（构造函数抛错）/
-     * `hook-failed`（挂回调时抛错）/ `unsupported`（环境没有 Notification）。
+     * `construct-failed-actions`（带按钮的构造抛错，去掉 `actions` 降级重试成功；按钮
+     * 没了但通知弹出来了）/ `hook-failed`（挂回调时抛错）/ `unsupported`（环境没有
+     * Notification）。
      *
      * 每条带 `key`（可读身份 `<插件>:<会话>#<事件键>`）与 `tag`（真正交给系统的短哈希）——
      * **tag 超长会导致通知被 Chromium 静默丢弃**，所以两者分开记。

@@ -103,10 +103,15 @@ each other. The plugin therefore:
   exactly as much as its ability to be seen while you are away from the screen (0.4.1 briefly dropped
   it, and the toast sinking into the notification centre after a few seconds read as "notifications
   stopped popping"; restored in 0.5.x);
-- provides the required button itself — `actions: [{ type: 'button', text: '打开对话' }]` — so clicking
-  the button and clicking the body are the same `click`, both jump to the Session, while the native ×
-  in the corner still just closes. Electron 42+ supports `actions` buttons on Windows and renders the
-  provided text;
+- provides the required button itself — `actions: [{ action: 'open-session', title: '打开对话' }]` — so
+  clicking the button and clicking the body are the same `click`, both jump to the Session, while the
+  native × in the corner still just closes. The shape is the **Web Notifications API** dictionary
+  (`action` = activation id, `title` = button label): the Electron **main-process**
+  `NotificationAction` shape (`{ type, text }`) makes the renderer's constructor throw a `TypeError`
+  (missing `action` member), which on 2026-11-18 silently killed a batch of answer notifications at
+  `construct-failed`. Two hard rules from that incident now live in the code: use the web shape, and
+  whenever a construction **with** `actions` throws, retry once without them — a button is optional,
+  the notification itself is not;
 - leaves the other four categories non-persistent: they flash by and settle in the notification centre.
 
 - Notification `tag`s are capped at 15 characters on purpose: a long `tag` makes Chromium drop the

@@ -137,7 +137,7 @@ Windows 的 toast 对 `tag` 长度有硬限制，**超了会让整条通知在 C
 
 ### 常驻通知与按钮的取舍
 
-「需要你回应」恢复常驻（`requireInteraction`）：问答通知的价值就在于人不在屏幕前也能看到；非常驻只闪几秒就沉进通知中心，回来的人什么都看不见（0.4.1 之后短暂去掉过它，实测当天用户就以为「不弹通知了」，0.5.x 起恢复）。按钮由插件自己给：`actions: [{ type: 'button', text: '打开对话' }]`——点它和点正文走的是同一个 `click`，都跳回会话；右上角原生「×」仍然只是关掉。Electron 42 起 Windows 通知正式支持 `actions` 按钮并按提供的文本渲染。
+「需要你回应」恢复常驻（`requireInteraction`）：问答通知的价值就在于人不在屏幕前也能看到；非常驻只闪几秒就沉进通知中心，回来的人什么都看不见（0.4.1 之后短暂去掉过它，实测当天用户就以为「不弹通知了」，0.5.x 起恢复）。按钮由插件自己给：`actions: [{ action: 'open-session', title: '打开对话' }]`——点它和点正文走的是同一个 `click`，都跳回会话；右上角原生「×」仍然只是关掉。形状是 **Web Notifications API** 的 `{ action, title }`（`action` 是激活回传的 ID，`title` 是按钮文字）：Electron **主进程** `Notification` 的 `{ type, text }` 结构在渲染进程里构造即抛 `TypeError`（`action` 成员缺失），2026-11-18 曾因此让一批问答通知全部停在 `construct-failed`；同页的教训还有一条硬规则——**带按钮的构造失败必须先降级重试（去掉 `actions` 再弹）**，按钮可有可无，通知本身不能丢。
 
 > Windows 的硬规则：想在屏幕上停留（不自动收走）的 toast **必须至少带一颗动作按钮**。不给按钮的话，平台会自动补一颗「关闭」（whatwg/notifications#236），而那颗自动按钮的激活事件会被 Electron 当成一次 `click` 回调（electron#27088）——表现为**点「关闭」也跳回会话、还把窗口提到前台**，名字和行为完全拧着。
 
@@ -156,6 +156,7 @@ Windows 的 toast 图标固定取**应用图标**（AUMID 对应的快捷方式�
 | `permission` / `unsupported` | 权限没给 / 环境没有 `Notification` |
 | `deduped` | 同一事件已被别的标签页弹过 |
 | `construct-failed` / `hook-failed` | 构造或挂回调时抛异常（带 `detail`） |
+| `construct-failed-actions` | 带按钮的构造抛异常，已降级（去掉 `actions`）重试并成功弹出 |
 | `no-event` | 2.5 秒内什么事件都没来，**只是「未确认」**，不能当成功也不能当失败，更不能用它触发重发 |
 
 要确认系统侧，查 `Microsoft-Windows-PushNotification-Platform/Operational` 里的 2416 / 3052 / 3153 事件——**没有 2416 就说明通知根本没离开 Electron**。
